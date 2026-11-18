@@ -9,7 +9,9 @@ repository = "https://github.com/nullopt/deskflip"
 [dependencies]
 log = { version = "0.4.35", features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
 toml = "1.2.1"
+windows = { version = "0.62.2", features = ["Win32_Devices_Display", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_System_Console"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
