@@ -5,5 +5,6 @@
 
 #![deny(unsafe_code)]
 
+pub mod input;
 pub mod logger;
 pub mod paths;
