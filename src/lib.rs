@@ -6,8 +6,14 @@
 #![deny(unsafe_code)]
 
 pub mod cli;
+pub mod config;
 pub mod display;
+pub mod hotkey;
 pub mod input;
 pub mod logger;
 pub mod paths;
+pub mod validate;
 pub mod win;
+
+#[cfg(test)]
+mod testing;
