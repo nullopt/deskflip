@@ -1,0 +1,22 @@
+[package]
+name = "deskflip"
+version = "0.1.0"
+edition = "2024"
+description = "Switch monitor inputs and Windows display layout together, from the tray or a hotkey"
+license = "MIT"
+repository = "https://github.com/nullopt/deskflip"
+
+[dependencies]
+log = { version = "0.4.35", features = ["std"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
