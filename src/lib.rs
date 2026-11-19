@@ -16,6 +16,7 @@ pub mod logger;
 pub mod notify;
 pub mod paths;
 pub mod plan;
+pub mod settings;
 pub mod state;
 pub mod tray;
 pub mod validate;

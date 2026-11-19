@@ -12,6 +12,7 @@ use crate::hotkey;
 use crate::input::{input_name, parse_input_codes};
 use crate::logger;
 use crate::paths;
+use crate::settings;
 use crate::state::{State, current_layout};
 use crate::tray;
 use crate::validate::validate;
@@ -25,6 +26,7 @@ With no command, Deskflip runs in the system tray.
 Commands:
   apply <layout>   Switch to a layout
   list             List layouts; * marks the one in effect
+  settings         Open the settings window
   monitors         List connected monitors and what they report (useful in bug reports)
 ";
 
@@ -35,6 +37,12 @@ pub fn run() -> ExitCode {
 
     match args.split_first() {
         None => tray::run(),
+        // Debug builds of the window take rendering arguments of their own after the command.
+        Some((command, rest))
+            if command == "settings" && (rest.is_empty() || cfg!(debug_assertions)) =>
+        {
+            settings::run()
+        }
         Some((command, rest)) if command == "apply" && !rest.is_empty() => apply(&rest.join(" ")),
         Some((command, [])) if command == "list" => list(),
         Some((command, [])) if command == "monitors" => {

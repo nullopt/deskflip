@@ -12,8 +12,8 @@ use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, INFINITE, ReleaseMutex, SetEvent, WaitForSingleObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
-    TranslateMessage, WM_QUIT,
+    DispatchMessageW, FindWindowW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW,
+    QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow, TranslateMessage, WM_QUIT,
 };
 use windows::core::HSTRING;
 
@@ -108,6 +108,18 @@ impl Drop for NamedEvent {
     fn drop(&mut self) {
         // SAFETY: the handle is ours and is closed exactly once, here.
         let _ = unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// Brings the window with this exact title to the front, restoring it if minimised.
+pub fn focus_window_titled(title: &str) {
+    // SAFETY: the title is a valid NUL-terminated string for the duration of the call, and the
+    // window handle is used only if FindWindowW returned one.
+    unsafe {
+        if let Ok(window) = FindWindowW(None, &HSTRING::from(title)) {
+            let _ = ShowWindow(window, SW_RESTORE);
+            let _ = SetForegroundWindow(window);
+        }
     }
 }
 
