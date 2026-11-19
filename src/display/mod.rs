@@ -4,6 +4,8 @@
 //! decision logic can be tested without touching real hardware.
 
 mod ddc;
+#[cfg(test)]
+pub mod fake;
 mod topology;
 mod windows;
 
