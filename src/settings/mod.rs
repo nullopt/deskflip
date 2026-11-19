@@ -240,7 +240,7 @@ fn first_run(p: ui::Paint, s: &Settings) -> El {
         p,
         "first-run-banner",
         "Welcome to Deskflip",
-        "Check that each monitor is named the way you think of it, then tell Deskflip which          input this PC is plugged into. After that, create a layout for each way you use your          desk.",
+        "Check that each monitor is named the way you think of it, then tell Deskflip which input this PC is plugged into. After that, create a layout for each way you use your desk.",
     ))
 }
 
