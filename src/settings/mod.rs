@@ -28,6 +28,7 @@ use rune_kit::{ButtonVariant, Dialog, Kit, ShortcutRecorderState};
 
 use self::model::Model;
 use self::monitors::TestState;
+use self::present::GuideChoice;
 use self::ui::Paint;
 use crate::autostart;
 use crate::config::Config;
@@ -122,6 +123,8 @@ pub struct Settings {
     pub detecting: bool,
     /// The monitor the Layouts page is editing; the first one when unset.
     pub selected_monitor: Option<MonitorId>,
+    /// The setup checklist section the user opened or closed by hand, if any.
+    pub guide_choice: Option<GuideChoice>,
     /// The dropdown that is open, by its key. Only one is open at a time.
     pub open_select: Option<String>,
     /// Delete was pressed once on this layout and waits to be pressed again.
@@ -177,6 +180,7 @@ impl Settings {
             close_prompt: false,
             detecting: false,
             selected_monitor: None,
+            guide_choice: None,
             open_select: None,
             confirm_delete: false,
             applying: false,
@@ -240,19 +244,27 @@ impl Settings {
         };
     }
 
-    /// Does the next thing the setup checklist asks for.
-    pub fn guide_action(&mut self) {
+    /// Does what section `step` of the setup checklist asks for.
+    pub fn guide_action(&mut self, step: usize) {
+        match step {
+            0 | 1 => self.go_to(Page::Monitors),
+            2 => self.create_handover_layout(),
+            _ => {
+                self.save();
+            }
+        }
+    }
+
+    /// Opens section `step` of the setup checklist, or closes it if it is the open one.
+    pub fn toggle_guide_step(&mut self, step: usize) {
         let Some(steps) = present::guide(&self.model) else {
             return;
         };
-        match steps.iter().position(|step| !step.done) {
-            Some(0 | 1) => self.go_to(Page::Monitors),
-            Some(2) => self.create_handover_layout(),
-            Some(_) => {
-                self.save();
-            }
-            None => {}
-        }
+        let open = present::open_step(&steps, self.guide_choice);
+        self.guide_choice = Some(GuideChoice {
+            open: (open != Some(step)).then_some(step),
+            when_next: present::next_step(&steps),
+        });
     }
 
     /// What stops the draft from being saved, in words.

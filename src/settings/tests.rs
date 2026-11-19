@@ -773,6 +773,10 @@ fn the_checklist_button_acts_on_the_first_step_not_yet_done() {
     let mut runtime = window(scenes::on_page(scenes::first_run(), Page::General));
     press(&mut runtime, "guide-action");
     assert_eq!(runtime.state.page, Page::Monitors);
+    assert!(
+        runtime.find("guide-action").is_none(),
+        "no button that leads to the page already on screen"
+    );
 }
 
 #[test]
@@ -849,4 +853,71 @@ fn looking_again_notices_a_monitor_that_came_back_to_this_pc() {
         present::monitor_status(&settings.snapshot, &left()),
         MonitorStatus::InUse
     );
+}
+
+// --- the setup checklist as an accordion ---
+
+fn open_section(settings: &Settings) -> Option<usize> {
+    let steps = present::guide(&settings.model).expect("the checklist is showing");
+    present::open_step(&steps, settings.guide_choice)
+}
+
+#[test]
+fn the_first_unfinished_section_is_open() {
+    let mut settings = scenes::first_run();
+    assert_eq!(open_section(&settings), Some(0));
+    settings.model.draft.monitors[0].label = "Left".to_owned();
+    settings.model.draft.monitors[1].label = "Right".to_owned();
+    assert_eq!(open_section(&settings), Some(1));
+}
+
+#[test]
+fn clicking_a_section_opens_it_and_clicking_it_again_closes_it() {
+    let mut settings = scenes::first_run();
+    settings.toggle_guide_step(2);
+    assert_eq!(open_section(&settings), Some(2));
+    settings.toggle_guide_step(2);
+    assert_eq!(open_section(&settings), None);
+    settings.toggle_guide_step(0);
+    assert_eq!(open_section(&settings), Some(0));
+}
+
+#[test]
+fn finishing_a_section_collapses_it_and_opens_the_next_even_if_opened_by_hand() {
+    let mut settings = scenes::first_run();
+    settings.toggle_guide_step(0);
+    settings.toggle_guide_step(0);
+    settings.toggle_guide_step(0);
+    settings.model.draft.monitors[0].label = "Left".to_owned();
+    settings.model.draft.monitors[1].label = "Right".to_owned();
+    assert_eq!(open_section(&settings), Some(1));
+}
+
+#[test]
+fn a_finished_section_can_be_reopened_to_read_it() {
+    let mut settings = scenes::first_run();
+    settings.toggle_confirmed(0);
+    settings.toggle_guide_step(1);
+    assert_eq!(open_section(&settings), Some(1));
+}
+
+#[test]
+fn pressing_a_section_header_opens_that_section() {
+    let mut runtime = window(scenes::first_run());
+    assert!(runtime.find("guide-body-0").is_some());
+    assert!(runtime.find("guide-body-2").is_none());
+    press(&mut runtime, "guide-step-2");
+    assert!(runtime.find("guide-body-2").is_some());
+    assert!(runtime.find("guide-body-0").is_none());
+}
+
+#[test]
+fn each_sections_button_does_that_sections_job() {
+    let mut settings = scenes::on_page(scenes::first_run(), Page::General);
+    settings.guide_action(1);
+    assert_eq!(settings.page, Page::Monitors);
+
+    let mut settings = saving_to("guide-save", scenes::first_run());
+    settings.guide_action(3);
+    assert!(!settings.model.is_dirty());
 }

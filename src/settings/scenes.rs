@@ -17,6 +17,7 @@ pub type Scene = (&'static str, fn(&mut Settings));
 /// Scene names and how each rewrites the state, in the form the app specification takes.
 pub const SCENES: &[Scene] = &[
     ("first-run", |s| *s = first_run()),
+    ("setup-halfway", |s| *s = setup_halfway()),
     ("desk", |s| *s = desk()),
     ("desk-monitors", |s| *s = on_page(desk(), Page::Monitors)),
     ("desk-general", |s| *s = on_page(desk(), Page::General)),
@@ -129,6 +130,15 @@ pub fn first_run() -> Settings {
     let mut settings = Settings::new(model, None);
     settings.snapshot = desk_snapshot();
     on_page(settings, Page::Monitors)
+}
+
+/// A first run with the monitors named and one confirmed: two checklist sections finished.
+pub fn setup_halfway() -> Settings {
+    let mut settings = first_run();
+    settings.model.draft.monitors[0].label = "Left".to_owned();
+    settings.model.draft.monitors[1].label = "Right".to_owned();
+    settings.model.draft.monitors[0].pc_input_confirmed = true;
+    on_page(settings, Page::Layout(0))
 }
 
 /// The left monitor's PC input has not been confirmed.

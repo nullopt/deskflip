@@ -19,6 +19,30 @@ pub struct GuideStep {
     pub done: bool,
 }
 
+/// A section of the checklist the user opened or closed by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuideChoice {
+    /// The section left open; `None` when the open one was closed.
+    pub open: Option<usize>,
+    /// The first unfinished section at that moment. Once that changes, the choice is spent.
+    pub when_next: Option<usize>,
+}
+
+/// The first section still to do.
+pub fn next_step(steps: &[GuideStep]) -> Option<usize> {
+    steps.iter().position(|step| !step.done)
+}
+
+/// The section shown open: the first unfinished one, unless the user chose otherwise since
+/// the last section was finished. Finishing a section always moves on to the next.
+pub fn open_step(steps: &[GuideStep], choice: Option<GuideChoice>) -> Option<usize> {
+    let next = next_step(steps);
+    match choice {
+        Some(choice) if choice.when_next == next => choice.open,
+        _ => next,
+    }
+}
+
 /// Whether a layout hands any monitor to another device.
 fn hands_over(layout: &Layout) -> bool {
     layout
