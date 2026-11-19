@@ -111,3 +111,7 @@ cargo run -- settings --snap layouts.png --scene desk --theme dark --scale 2
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+Releases include `THIRD-PARTY-NOTICES.txt`, the licences of the packages Deskflip is built
+from, and the licences of the two fonts built into the settings window
+([Inter](licenses/Inter-LICENSE.txt) and [IBM Plex Mono](licenses/IBMPlexMono-LICENSE.txt)).

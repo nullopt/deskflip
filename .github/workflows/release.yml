@@ -19,9 +19,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Collect third-party licence notices
+        run: cargo about generate --locked about.hbs -o THIRD-PARTY-NOTICES.txt
       - name: Package
         shell: pwsh
-        run: Compress-Archive -Path target/release/deskflip.exe, LICENSE, README.md -DestinationPath deskflip.zip
+        run: >
+          Compress-Archive -DestinationPath deskflip.zip -Path
+          target/release/deskflip.exe, LICENSE, README.md, THIRD-PARTY-NOTICES.txt,
+          licenses/Inter-LICENSE.txt, licenses/IBMPlexMono-LICENSE.txt
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
