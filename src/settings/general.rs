@@ -5,10 +5,10 @@ use rune::tok::{space, type_};
 use rune::{col, text};
 use rune_kit::{ButtonVariant, Kit, ShortcutRecorder};
 
-use super::Settings;
 use super::ui::{self, Paint};
+use super::{HotkeyTarget, Settings};
 
-pub fn view(p: Paint, k: &Kit, s: &Settings, _layer: &mut Vec<El>) -> El {
+pub fn view(p: Paint, k: &Kit, s: &Settings) -> El {
     let startup = ui::section(
         p,
         "startup",
@@ -17,8 +17,16 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, _layer: &mut Vec<El>) -> El {
             p,
             "start-with-windows",
             "Start with Windows",
-            "Deskflip waits in the system tray, next to the clock.",
-            ui::toggle(p, s.start_with_windows),
+            s.autostart_error
+                .as_deref()
+                .unwrap_or("Deskflip waits in the system tray, next to the clock."),
+            ui::toggle(
+                p,
+                "start-with-windows-switch",
+                s.start_with_windows,
+                true,
+                Settings::toggle_start_with_windows,
+            ),
         )],
     );
     let hotkeys = ui::section(
@@ -34,6 +42,8 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, _layer: &mut Vec<El>) -> El {
                 &mut s.recorders.cycle
             })
             .label("Switch to the next layout")
+            .error_message(ui::hotkey_refusal)
+            .on_change(|s: &mut Settings, shortcut, _| s.set_hotkey(HotkeyTarget::Cycle, shortcut))
             .build(k),
         )],
     );
@@ -52,7 +62,7 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, _layer: &mut Vec<El>) -> El {
                     "Open folder",
                     ButtonVariant::Neutral,
                     true,
-                    |_| {},
+                    |s, _| s.open_config_folder(),
                 ),
             ),
             ui::setting_row(

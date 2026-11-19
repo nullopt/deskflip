@@ -1,11 +1,10 @@
 //! The window's look: colours, and the pieces every page is built from.
 
 use rune::tok::{self, TextStyle, Theme, motion, radius, space, type_};
-use rune::{Color, Cx, El, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed};
+use rune::{Color, Cx, El, Shortcut, ShortcutError, Tx, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, Select};
 
 use super::{Page, Settings};
-use crate::validate::validate;
 
 pub const PAGE_TITLE: TextStyle = TextStyle::new(20.0, 600.0);
 pub const SIDEBAR_WIDTH: f32 = 200.0;
@@ -141,14 +140,23 @@ pub fn note_row(p: Paint, key: &str, content: &str) -> El {
         .child(note(p, content).grow(1.0).min_w(0.0))
 }
 
-/// A switch. The caller attaches what pressing it does.
-pub fn toggle(p: Paint, on: bool) -> El {
+/// A switch. A disabled one is dimmed and does nothing.
+pub fn toggle(
+    p: Paint,
+    key: &str,
+    on: bool,
+    enabled: bool,
+    on_press: impl Fn(&mut Settings) + 'static,
+) -> El {
     let (width, height, knob) = (38.0, 22.0, 18.0);
     let inset = (height - knob) / 2.0;
-    el().key("switch")
-        .role("switch")
-        .checked(on)
-        .focusable(true)
+    let switch = el().key(key).role("switch").checked(on);
+    let switch = if enabled {
+        switch.focusable(true).on_press(on_press)
+    } else {
+        switch.opacity(0.4).disabled(true)
+    };
+    switch
         .size(width, height)
         .radius(height / 2.0)
         .fill(if on { p.accent } else { p.t.control_off })
@@ -259,15 +267,84 @@ pub fn button(
     label: &str,
     variant: ButtonVariant,
     enabled: bool,
-    on_press: impl Fn(&mut Settings) + 'static,
+    on_press: impl Fn(&mut Settings, &mut Tx) + 'static,
 ) -> El {
     el().key(key).child(
         Button::new(label)
             .variant(variant)
             .disabled(!enabled)
-            .on_press(on_press)
+            .on_press_tx(on_press)
             .build(k),
     )
+}
+
+/// What a dropdown shows.
+pub struct Dropdown<'a> {
+    /// Names the dropdown; also what [`Settings::open_select`] holds while it is open.
+    pub key: String,
+    pub label: &'a str,
+    pub options: &'a [String],
+    pub current: Option<&'a str>,
+    pub width: f32,
+}
+
+/// A dropdown that closes any other open one, and itself once a choice is made.
+pub fn dropdown(
+    k: &Kit,
+    s: &Settings,
+    dropdown: Dropdown,
+    on_choose: impl Fn(&mut Settings, &str) + Clone + 'static,
+    layer: &mut Vec<El>,
+) -> El {
+    let toggle_key = dropdown.key.clone();
+    let select = Select::new(format!("{}-select", dropdown.key), dropdown.options)
+        .current(dropdown.current)
+        .placeholder("Choose\u{2026}")
+        .label(dropdown.label)
+        .width(dropdown.width)
+        .open(s.open_select.as_deref() == Some(dropdown.key.as_str()))
+        .on_toggle(move |s: &mut Settings| s.toggle_select(&toggle_key))
+        .on_close(|s: &mut Settings| s.open_select = None)
+        .on_choose(move |s: &mut Settings, name: &str, _| {
+            on_choose(s, name);
+            s.open_select = None;
+        })
+        .build(k, layer);
+    el().key(dropdown.key).child(select)
+}
+
+/// Why a hotkey field refused a key combination, in Windows' names for the keys.
+pub fn hotkey_refusal(error: &ShortcutError, shortcut: Option<&Shortcut>) -> String {
+    let chord = shortcut.map(|shortcut| shortcut.keycaps().join("+"));
+    match (error, chord) {
+        (ShortcutError::Conflict, Some(chord)) => {
+            format!("{chord} is already used by another hotkey here.")
+        }
+        (ShortcutError::InvalidAccelerator(_), Some(_)) => {
+            "A hotkey needs Ctrl, Alt or Win, and a key Deskflip can register.".to_owned()
+        }
+        (_, None) => "That key can't be part of a hotkey.".to_owned(),
+        (_, Some(chord)) => format!("{chord} can't be used."),
+    }
+}
+
+/// A line of news about something the user just did.
+pub fn notice(p: Paint, key: &str, message: &str) -> El {
+    row()
+        .key(key)
+        .px(space::S3 + space::S1)
+        .py(space::S3)
+        .radius(radius::LG)
+        .fill(p.accent.alpha(0.14))
+        .border(p.hair, p.accent.alpha(0.35))
+        .child(
+            text(message)
+                .font(type_::BODY)
+                .color(p.t.text)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0),
+        )
 }
 
 pub fn sidebar(p: Paint, s: &Settings) -> El {
@@ -366,7 +443,7 @@ fn nav_item(
 
 /// The bar that appears while there are unsaved changes.
 pub fn save_bar(p: Paint, k: &Kit, s: &Settings) -> El {
-    let problems = validate(&s.model.draft);
+    let problems = s.problems();
     let mut messages = col().grow(1.0).min_w(0.0).gap(2.0).child(
         text(if s.model.is_first_run() {
             "Nothing is saved yet"
@@ -377,12 +454,12 @@ pub fn save_bar(p: Paint, k: &Kit, s: &Settings) -> El {
         .color(p.t.text),
     );
     for problem in &problems {
-        let message = problem.message(&s.model.draft);
-        let line = match &problem.layout {
-            Some(layout) => format!("{layout}: {message}"),
-            None => message,
-        };
-        messages = messages.child(text(line).font(type_::LABEL).color(p.warning).wrap());
+        messages = messages.child(
+            text(problem.as_str())
+                .font(type_::LABEL)
+                .color(p.warning)
+                .wrap(),
+        );
     }
     if let Some(error) = &s.save_error {
         messages = messages.child(
@@ -400,7 +477,7 @@ pub fn save_bar(p: Paint, k: &Kit, s: &Settings) -> El {
             "Discard",
             ButtonVariant::Neutral,
             true,
-            Settings::discard,
+            |s, _| s.discard(),
         ));
     }
     buttons = buttons.child(button(
@@ -409,7 +486,7 @@ pub fn save_bar(p: Paint, k: &Kit, s: &Settings) -> El {
         "Save",
         ButtonVariant::Contrast,
         problems.is_empty(),
-        |s| {
+        |s, _| {
             s.save();
         },
     ));

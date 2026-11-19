@@ -4,26 +4,39 @@
 //! process, which reloads; the two processes share nothing else.
 
 mod general;
+mod identify;
 mod layouts;
 pub mod model;
 mod monitors;
+mod present;
 #[cfg(any(debug_assertions, test))]
 pub mod scenes;
 mod ui;
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
+use std::thread;
 
-use rune::tok::space;
-use rune::{App, AppHandle, AppSpec, Cx, El, ScrollSpec, Shortcut, TextEdit, Tx, col, row};
-use rune_kit::ShortcutRecorderState;
+use rune::tok::{space, type_};
+use rune::{
+    App, AppHandle, AppSpec, Cx, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, Tx, Waker, col,
+    row, text,
+};
+use rune_kit::{ButtonVariant, Dialog, Kit, ShortcutRecorderState};
 
 use self::model::Model;
+use self::monitors::TestState;
+use self::ui::Paint;
 use crate::autostart;
 use crate::config::Config;
 use crate::display::{MonitorId, Snapshot};
+use crate::hotkey;
+use crate::input::InputCode;
 use crate::paths;
-use crate::win::{self, NamedMutex, SETTINGS_MUTEX};
+use crate::validate::validate;
+use crate::win::{self, CHANGED_EVENT, NamedEvent, NamedMutex, SETTINGS_MUTEX};
 
 pub const WINDOW_TITLE: &str = "Deskflip settings";
 
@@ -37,6 +50,35 @@ pub enum Page {
     Layout(usize),
     Monitors,
     General,
+}
+
+/// Which hotkey a hotkey field sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeyTarget {
+    /// The hotkey that switches to the next layout.
+    Cycle,
+    /// A layout's own hotkey, by the layout's place in the draft.
+    Layout(usize),
+}
+
+/// What closing the window leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseAction {
+    Quit,
+    /// Ask what to do with the unsaved changes.
+    Prompt,
+    /// A monitor is showing another input for a test; stay alive to bring it back.
+    WaitForTest,
+}
+
+pub fn close_action(dirty: bool, testing: bool) -> CloseAction {
+    if dirty {
+        CloseAction::Prompt
+    } else if testing {
+        CloseAction::WaitForTest
+    } else {
+        CloseAction::Quit
+    }
 }
 
 /// The hotkey fields. Each remembers whether it is waiting for a key press.
@@ -64,6 +106,10 @@ pub struct Settings {
     /// The monitors as Windows last reported them.
     pub snapshot: Snapshot,
     pub page: Page,
+    /// Where the settings are saved.
+    pub config_path: PathBuf,
+    /// Whether a save is announced to the tray. Off for windows that are not the real one.
+    notify_tray: bool,
     /// Shown instead of the pages when the settings file exists but cannot be used.
     pub load_error: Option<String>,
     pub save_error: Option<String>,
@@ -73,8 +119,21 @@ pub struct Settings {
     pub detecting: bool,
     /// The monitor the Layouts page is editing; the first one when unset.
     pub selected_monitor: Option<MonitorId>,
+    /// The dropdown that is open, by its key. Only one is open at a time.
+    pub open_select: Option<String>,
+    /// Delete was pressed once on this layout and waits to be pressed again.
+    pub confirm_delete: bool,
+    /// A layout is being applied to the real monitors.
+    pub applying: bool,
+    pub apply_message: Option<String>,
+    pub test: TestState,
+    /// The input each monitor's "Try another input" row will switch to.
+    pub test_choice: HashMap<MonitorId, InputCode>,
+    /// The window was closed while a test was running; quit once the monitor is back.
+    pub quit_after_test: bool,
     /// Whether Windows starts Deskflip at sign-in. Lives in the registry, not in the draft.
     pub start_with_windows: bool,
+    pub autostart_error: Option<String>,
     pub recorders: Recorders,
     pub edits: Edits,
 }
@@ -82,11 +141,14 @@ pub struct Settings {
 impl Settings {
     /// Reads the settings file. A file that cannot be used is reported, never overwritten.
     pub fn load() -> Self {
-        let (saved, load_error) = match Config::load(&paths::config_file()) {
+        let config_path = paths::config_file();
+        let (saved, load_error) = match Config::load(&config_path) {
             Ok(saved) => (saved, None),
             Err(error) => (None, Some(error.to_string())),
         };
         let mut settings = Self::new(Model::new(saved), load_error);
+        settings.config_path = config_path;
+        settings.notify_tray = true;
         settings.start_with_windows = autostart::is_enabled();
         settings
     }
@@ -101,12 +163,22 @@ impl Settings {
             model,
             snapshot: Snapshot::default(),
             page,
+            config_path: PathBuf::new(),
+            notify_tray: false,
             load_error,
             save_error: None,
             close_prompt: false,
             detecting: false,
             selected_monitor: None,
+            open_select: None,
+            confirm_delete: false,
+            applying: false,
+            apply_message: None,
+            test: TestState::Idle,
+            test_choice: HashMap::new(),
+            quit_after_test: false,
             start_with_windows: false,
+            autostart_error: None,
             recorders: Recorders::default(),
             edits: Edits::default(),
         };
@@ -118,7 +190,7 @@ impl Settings {
     pub fn sync_fields(&mut self) {
         let draft = &self.model.draft;
         let recorder = |hotkey: &Option<String>| {
-            ShortcutRecorderState::new(hotkey.as_deref().and_then(shortcut_of))
+            ShortcutRecorderState::new(hotkey.as_deref().and_then(present::shortcut_of))
         };
         self.recorders = Recorders {
             cycle: recorder(&draft.cycle_hotkey),
@@ -146,22 +218,181 @@ impl Settings {
     pub fn go_to(&mut self, page: Page) {
         self.page = page;
         self.selected_monitor = None;
+        self.open_select = None;
+        self.confirm_delete = false;
+        self.apply_message = None;
         self.sync_fields();
     }
 
-    pub fn add_layout(&mut self) {}
+    /// Opens a dropdown, or closes it if it is the open one.
+    pub fn toggle_select(&mut self, key: &str) {
+        self.open_select = match &self.open_select {
+            Some(open) if open == key => None,
+            _ => Some(key.to_owned()),
+        };
+    }
+
+    /// What stops the draft from being saved, in words.
+    pub fn problems(&self) -> Vec<String> {
+        validate(&self.model.draft)
+            .iter()
+            .map(|problem| {
+                let message = problem.message(&self.model.draft);
+                match &problem.layout {
+                    Some(layout) => format!("{layout}: {message}"),
+                    None => message,
+                }
+            })
+            .collect()
+    }
 
     /// Writes the draft to disk and tells the tray. Returns whether it worked.
     pub fn save(&mut self) -> bool {
-        false
+        if !self.problems().is_empty() {
+            return false;
+        }
+        match self.model.draft.save(&self.config_path) {
+            Ok(()) => {
+                self.model.mark_saved();
+                self.save_error = None;
+                if self.notify_tray
+                    && let Ok(event) = NamedEvent::open_or_create(CHANGED_EVENT)
+                {
+                    event.signal();
+                }
+                true
+            }
+            Err(error) => {
+                self.save_error = Some(error.to_string());
+                false
+            }
+        }
     }
 
-    pub fn discard(&mut self) {}
+    pub fn discard(&mut self) {
+        self.model.discard();
+        self.save_error = None;
+        if let Page::Layout(index) = self.page
+            && index >= self.model.draft.layouts.len()
+        {
+            self.page = Page::Monitors;
+        }
+        self.go_to(self.page);
+    }
+
+    /// Sets or clears a hotkey. A refusal leaves the draft as it was and says why.
+    pub fn set_hotkey(
+        &mut self,
+        target: HotkeyTarget,
+        shortcut: Option<&Shortcut>,
+    ) -> Result<(), ShortcutError> {
+        let stored = shortcut
+            .map(present::stored_hotkey)
+            .transpose()
+            .map_err(|error| ShortcutError::InvalidAccelerator(error.to_string()))?;
+        let draft = &mut self.model.draft;
+        if let Some(wanted) = &stored {
+            let others = std::iter::once((HotkeyTarget::Cycle, &draft.cycle_hotkey)).chain(
+                draft
+                    .layouts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, layout)| (HotkeyTarget::Layout(index), &layout.hotkey)),
+            );
+            for (owner, existing) in others {
+                let taken = existing
+                    .as_deref()
+                    .is_some_and(|existing| &hotkey::pretty(existing) == wanted);
+                if owner != target && taken {
+                    return Err(ShortcutError::Conflict);
+                }
+            }
+        }
+        match target {
+            HotkeyTarget::Cycle => draft.cycle_hotkey = stored,
+            HotkeyTarget::Layout(index) => {
+                if let Some(layout) = draft.layouts.get_mut(index) {
+                    layout.hotkey = stored;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// "Save" in the close question. Returns whether the window may now go.
+    pub fn close_save(&mut self) -> bool {
+        if self.save() {
+            self.close_prompt = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// "Don't save" in the close question.
+    pub fn close_discard(&mut self) {
+        self.model.discard();
+        // On a first run there is nothing to return to; closing must still work.
+        self.model.mark_saved();
+        self.close_prompt = false;
+    }
+
+    pub fn close_cancel(&mut self) {
+        self.close_prompt = false;
+    }
+
+    pub fn toggle_start_with_windows(&mut self) {
+        let wanted = !self.start_with_windows;
+        match autostart::set(wanted) {
+            Ok(()) => {
+                self.start_with_windows = wanted;
+                self.autostart_error = None;
+            }
+            Err(error) => self.autostart_error = Some(error.to_string()),
+        }
+    }
+
+    pub fn open_config_folder(&mut self) {
+        if let Some(folder) = self.config_path.parent() {
+            let _ = std::fs::create_dir_all(folder);
+            if let Err(error) = std::process::Command::new("explorer").arg(folder).spawn() {
+                log::warn!("could not open {}: {error}", folder.display());
+            }
+        }
+    }
+
+    /// Sets the unreadable settings file aside and begins as on a first run.
+    pub fn start_fresh(&mut self) {
+        let backup = self.config_path.with_extension("toml.bad");
+        if let Err(error) = std::fs::rename(&self.config_path, &backup) {
+            self.load_error = Some(format!("Could not set the old file aside: {error}"));
+            return;
+        }
+        self.load_error = None;
+        self.model = Model::new(None);
+        self.go_to(Page::Monitors);
+        self.start_detect();
+    }
 }
 
-/// The stored form of a hotkey ("Ctrl+Alt+2") as the hotkey field's value.
-fn shortcut_of(stored: &str) -> Option<Shortcut> {
-    stored.parse().ok()
+/// Runs `work` off the UI thread and hands its result to `done` on the UI thread. Returns
+/// whether the work was started: without a real window (tests, headless renders) nothing
+/// runs, so no monitor is ever touched.
+fn in_background<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    done: impl FnOnce(&mut Settings, T, &mut Tx) + Send + 'static,
+) -> bool {
+    if rune::is_headless() {
+        return false;
+    }
+    let Some(handle) = HANDLE.get().cloned() else {
+        return false;
+    };
+    thread::spawn(move || {
+        let result = work();
+        handle.update(move |s, tx| done(s, result, tx));
+    });
+    true
 }
 
 pub fn run() -> ExitCode {
@@ -175,6 +406,7 @@ pub fn run() -> ExitCode {
         min_size: Some((760.0, 520.0)),
         #[cfg(debug_assertions)]
         scenes: scenes::SCENES,
+        setup: Some(setup),
         ..AppSpec::new(WINDOW_TITLE, (920.0, 640.0), Settings::load, view)
     };
     // The window cannot refuse to close, so the process outlives it: a close with unsaved
@@ -186,14 +418,22 @@ pub fn run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn setup(s: &mut Settings, _: Waker) {
+    if s.load_error.is_none() {
+        s.start_detect();
+    }
+}
+
 fn on_close(s: &mut Settings, tx: &mut Tx) {
-    if s.model.is_dirty() {
-        s.close_prompt = true;
-        if let Some(handle) = HANDLE.get() {
-            handle.open();
+    match close_action(s.model.is_dirty(), s.test == TestState::Running) {
+        CloseAction::Quit => tx.quit(),
+        CloseAction::WaitForTest => s.quit_after_test = true,
+        CloseAction::Prompt => {
+            s.close_prompt = true;
+            if let Some(handle) = HANDLE.get() {
+                handle.open();
+            }
         }
-    } else {
-        tx.quit();
     }
 }
 
@@ -202,10 +442,14 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let k = ui::kit(p);
     let mut layer = Vec::new();
 
+    if let Some(error) = &s.load_error {
+        return rune_kit::root(load_error(p, &k, s, error), layer);
+    }
+
     let page = match s.page {
         Page::Layout(index) => layouts::view(p, &k, s, index, &mut layer),
         Page::Monitors => monitors::view(p, &k, s, &mut layer),
-        Page::General => general::view(p, &k, s, &mut layer),
+        Page::General => general::view(p, &k, s),
     };
     let mut content = col().grow(1.0).min_w(0.0).min_h(0.0).h_full().child(
         col()
@@ -220,6 +464,7 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     if s.model.is_dirty() {
         content = content.child(ui::save_bar(p, &k, s));
     }
+    close_prompt(p, &k, s, &mut layer);
     let body = row()
         .key("window")
         .w_full()
@@ -231,7 +476,7 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
 }
 
 /// The page column, led by a welcome while nothing has been saved yet.
-fn first_run(p: ui::Paint, s: &Settings) -> El {
+fn first_run(p: Paint, s: &Settings) -> El {
     let column = col().padding(space::S6).gap(space::S6);
     if !s.model.is_first_run() {
         return column;
@@ -240,69 +485,126 @@ fn first_run(p: ui::Paint, s: &Settings) -> El {
         p,
         "first-run-banner",
         "Welcome to Deskflip",
-        "Check that each monitor is named the way you think of it, then tell Deskflip which input this PC is plugged into. After that, create a layout for each way you use your desk.",
+        "Check that each monitor is named the way you think of it, then tell Deskflip which \
+         input this PC is plugged into. After that, create a layout for each way you use your \
+         desk.",
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    use rune::{Env, Runtime};
-
-    use super::*;
-
-    fn window(state: Settings) -> Runtime<Settings> {
-        let env = Env {
-            system_dark: true,
-            scale: 1.0,
-        };
-        let mut runtime = Runtime::new(state, view, (920.0, 640.0), env);
-        runtime.frame(0.0);
-        runtime
-    }
-
-    fn press(runtime: &mut Runtime<Settings>, key: &str) {
-        let (x, y) = runtime
-            .find(key)
-            .unwrap_or_else(|| panic!("nothing on screen is called {key}"));
-        runtime.pointer_down(x, y);
-        runtime.pointer_up(x, y);
-        runtime.frame(1.0 / 60.0);
-    }
-
-    #[test]
-    fn sidebar_lists_layouts_then_pages() {
-        let runtime = window(scenes::desk());
-        for key in [
-            "nav-layout-0",
-            "nav-layout-1",
-            "nav-monitors",
-            "nav-general",
-        ] {
-            assert!(runtime.find(key).is_some(), "{key} is missing");
-        }
-    }
-
-    #[test]
-    fn pressing_monitors_shows_the_monitors_page() {
-        let mut runtime = window(scenes::desk());
-        press(&mut runtime, "nav-monitors");
-        assert_eq!(runtime.state.page, Page::Monitors);
-        assert!(runtime.find("monitor-card-0").is_some());
-    }
-
-    #[test]
-    fn save_bar_only_when_dirty() {
-        assert!(window(scenes::desk()).find("save").is_none());
-        assert!(window(scenes::unsaved_problem()).find("save").is_some());
-    }
-
-    #[test]
-    fn first_run_shows_the_banner() {
-        assert!(
-            window(scenes::first_run())
-                .find("first-run-banner")
-                .is_some()
+/// The question asked when the window is closed with unsaved changes.
+fn close_prompt(p: Paint, k: &Kit, s: &Settings, layer: &mut Vec<El>) {
+    let can_save = s.problems().is_empty();
+    let mut body = col().w_full().px(16.0).pb(16.0).gap(space::S3);
+    if !can_save {
+        body = body.child(
+            text("There are problems to fix before these changes can be saved.")
+                .font(type_::LABEL)
+                .color(p.warning)
+                .wrap(),
         );
-        assert!(window(scenes::desk()).find("first-run-banner").is_none());
     }
+    if let Some(error) = &s.save_error {
+        body = body.child(
+            text(format!("Could not save: {error}"))
+                .font(type_::LABEL)
+                .color(p.warning)
+                .wrap(),
+        );
+    }
+    let buttons = row()
+        .w_full()
+        .gap(space::S2)
+        .justify_end()
+        .child(ui::button(
+            k,
+            "close-cancel",
+            "Cancel",
+            ButtonVariant::Neutral,
+            true,
+            |s, _| s.close_cancel(),
+        ))
+        .child(ui::button(
+            k,
+            "close-discard",
+            "Don't save",
+            ButtonVariant::Neutral,
+            true,
+            |s, tx| {
+                s.close_discard();
+                tx.close_window();
+            },
+        ))
+        .child(ui::button(
+            k,
+            "close-save",
+            "Save",
+            ButtonVariant::Contrast,
+            can_save,
+            |s, tx| {
+                if s.close_save() {
+                    tx.close_window();
+                }
+            },
+        ));
+    Dialog::new("close-prompt", "Save your changes?")
+        .description("Changes you have not saved will be lost.")
+        .open(s.close_prompt)
+        .fit()
+        .click_outside(false)
+        .width(420.0)
+        .child(body.child(buttons))
+        .on_close(|s: &mut Settings| s.close_cancel())
+        .build(k, layer);
 }
+
+/// Shown instead of the pages when the settings file cannot be used.
+fn load_error(p: Paint, k: &Kit, s: &Settings, error: &str) -> El {
+    let message = col()
+        .key("load-error")
+        .max_w(520.0)
+        .gap(space::S3)
+        .child(
+            text("Deskflip could not read its settings file")
+                .font(ui::PAGE_TITLE)
+                .color(p.t.text)
+                .wrap(),
+        )
+        .child(ui::note(p, error))
+        .child(ui::note(p, &s.config_path.display().to_string()))
+        .child(
+            row()
+                .gap(space::S2)
+                .mt(space::S2)
+                .child(ui::button(
+                    k,
+                    "open-folder",
+                    "Open folder",
+                    ButtonVariant::Neutral,
+                    true,
+                    |s, _| s.open_config_folder(),
+                ))
+                .child(ui::button(
+                    k,
+                    "start-fresh",
+                    "Start fresh",
+                    ButtonVariant::Contrast,
+                    true,
+                    |s, _| s.start_fresh(),
+                )),
+        )
+        .child(ui::note(
+            p,
+            "Start fresh keeps the old file as config.toml.bad.",
+        ));
+    col()
+        .key("window")
+        .w_full()
+        .h_full()
+        .center()
+        .padding(space::S6)
+        .fill(p.t.bg)
+        .child(message)
+}
+
+#[cfg(test)]
+mod tests;

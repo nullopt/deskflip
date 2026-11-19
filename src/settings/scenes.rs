@@ -99,7 +99,7 @@ fn desk_snapshot() -> Snapshot {
     }
 }
 
-fn on_page(mut settings: Settings, page: Page) -> Settings {
+pub fn on_page(mut settings: Settings, page: Page) -> Settings {
     settings.go_to(page);
     settings
 }

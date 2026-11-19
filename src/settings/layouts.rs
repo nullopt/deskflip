@@ -2,79 +2,244 @@
 
 use rune::tok::{TextStyle, radius, space, type_};
 use rune::{Color, El, col, el, row, text};
-use rune_kit::{ButtonVariant, Kit, Select, ShortcutRecorder, TextInput};
+use rune_kit::{ButtonVariant, Kit, ShortcutRecorder, TextInput};
 
-use super::Settings;
-use super::model::input_choices;
-use super::ui::{self, Paint};
-use crate::config::{Layout, MonitorConfig, Role};
+use super::present::{self, DeskRect, RoleChoice, desk_rects, layout_summary, role_choice};
+use super::ui::{self, Dropdown, Paint};
+use super::{HotkeyTarget, Page, Settings, in_background};
+use crate::apply;
+use crate::config::{Layout, LayoutMonitor, MonitorConfig, Role};
+use crate::display::MonitorId;
 use crate::input::input_name;
 
 const FIELD_WIDTH: f32 = 220.0;
-const ROLE_LABELS: [&str; 4] = ["This PC", "Another device", "Off", "Don't change"];
+/// The size of the desk picture, in points.
+const DESK: (f32, f32) = (560.0, 190.0);
 const MONITOR_NUMBER: TextStyle = TextStyle::new(26.0, 700.0);
+
+impl Settings {
+    /// The layout on screen, by its place in the draft.
+    fn current_layout(&self) -> Option<usize> {
+        match self.page {
+            Page::Layout(index) if index < self.model.draft.layouts.len() => Some(index),
+            _ => None,
+        }
+    }
+
+    /// The monitor the page is editing: the one picked in the desk picture, else the first.
+    fn edited_monitor(&self) -> Option<MonitorId> {
+        let monitors = &self.model.draft.monitors;
+        self.selected_monitor
+            .as_ref()
+            .filter(|id| monitors.iter().any(|monitor| &&monitor.id == id))
+            .or_else(|| monitors.first().map(|monitor| &monitor.id))
+            .cloned()
+    }
+
+    pub fn select_monitor(&mut self, index: usize) {
+        self.selected_monitor = self
+            .model
+            .draft
+            .monitors
+            .get(index)
+            .map(|monitor| monitor.id.clone());
+        self.open_select = None;
+    }
+
+    /// Gives the edited monitor a role in the layout on screen.
+    pub fn set_role(&mut self, choice: RoleChoice) {
+        if let (Some(layout), Some(id)) = (self.current_layout(), self.edited_monitor()) {
+            present::set_role(&mut self.model.draft, layout, &id, choice);
+        }
+    }
+
+    /// Picks the input the other device is on, by its name in the dropdown.
+    pub fn set_other_input(&mut self, name: &str) {
+        let (Some(layout), Some(id)) = (self.current_layout(), self.edited_monitor()) else {
+            return;
+        };
+        let chosen = present::other_inputs(&self.model.draft, &id)
+            .into_iter()
+            .find(|&input| input_name(input) == name);
+        let entry = self.model.draft.layouts[layout]
+            .monitors
+            .iter_mut()
+            .find(|entry| entry.id == id);
+        if let (Some(input), Some(entry)) = (chosen, entry)
+            && matches!(entry.role, Role::Other { .. })
+        {
+            entry.role = Role::Other { input };
+        }
+    }
+
+    /// Makes the edited monitor the main one, or stops it being so. Only a monitor this PC
+    /// uses can be the main one.
+    pub fn toggle_primary(&mut self) {
+        let (Some(index), Some(id)) = (self.current_layout(), self.edited_monitor()) else {
+            return;
+        };
+        let layout = &mut self.model.draft.layouts[index];
+        if layout.primary.as_ref() == Some(&id) {
+            layout.primary = None;
+        } else if role_choice(layout, &id) == RoleChoice::ThisPc {
+            layout.primary = Some(id);
+        }
+    }
+
+    pub fn add_layout(&mut self) {
+        let layouts = &self.model.draft.layouts;
+        let taken = |name: &str| layouts.iter().any(|layout| layout.name == name);
+        let name = std::iter::once("New layout".to_owned())
+            .chain((2..).map(|number| format!("New layout {number}")))
+            .find(|name| !taken(name))
+            .unwrap_or_default();
+        let monitors = self
+            .model
+            .draft
+            .monitors
+            .iter()
+            .map(|monitor| LayoutMonitor {
+                id: monitor.id.clone(),
+                role: Role::Pc,
+            })
+            .collect();
+        self.model.draft.layouts.push(Layout {
+            name,
+            hotkey: None,
+            primary: None,
+            monitors,
+        });
+        self.go_to(Page::Layout(self.model.draft.layouts.len() - 1));
+    }
+
+    /// Deletes the layout on screen, on the second press: the first one only asks.
+    pub fn delete_layout(&mut self) {
+        let Some(index) = self.current_layout() else {
+            return;
+        };
+        if !self.confirm_delete {
+            self.confirm_delete = true;
+            return;
+        }
+        self.model.draft.layouts.remove(index);
+        let remaining = self.model.draft.layouts.len();
+        self.go_to(if remaining == 0 {
+            Page::Monitors
+        } else {
+            Page::Layout(index.min(remaining - 1))
+        });
+    }
+
+    /// The name field was typed into.
+    pub fn layout_name_changed(&mut self) {
+        if let Some(index) = self.current_layout() {
+            self.model.draft.layouts[index].name = self.edits.layout_name.text.clone();
+        }
+    }
+
+    /// Saves, then switches the real monitors to the layout on screen.
+    pub fn apply_now(&mut self) {
+        let Some(index) = self.current_layout() else {
+            return;
+        };
+        if self.applying || (self.model.is_dirty() && !self.save()) {
+            return;
+        }
+        let name = self.model.draft.layouts[index].name.clone();
+        self.applying = true;
+        self.apply_message = None;
+        in_background(
+            move || {
+                apply::run(&name)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+            |s, result, _| s.finish_apply(result),
+        );
+    }
+
+    pub fn finish_apply(&mut self, result: Result<(), String>) {
+        self.applying = false;
+        self.apply_message = result
+            .err()
+            .map(|error| format!("Could not apply: {error}"));
+    }
+}
 
 pub fn view(p: Paint, k: &Kit, s: &Settings, index: usize, layer: &mut Vec<El>) -> El {
     let Some(layout) = s.model.draft.layouts.get(index) else {
         return ui::note(p, "This layout no longer exists.");
     };
-    let monitors = &s.model.draft.monitors;
-    let selected = s
-        .selected_monitor
-        .as_ref()
-        .and_then(|id| monitors.iter().position(|monitor| &monitor.id == id))
-        .unwrap_or(0);
-
+    let edited = s.edited_monitor();
     let title = if layout.name.is_empty() {
         "Unnamed layout"
     } else {
         &layout.name
     };
-    let mut page = col()
-        .gap(space::S6)
-        .child(ui::page_header(
-            p,
-            title,
-            vec![ui::button(
-                k,
-                "apply-now",
-                "Apply now",
-                ButtonVariant::Contrast,
-                true,
-                |_| {},
-            )],
-        ))
-        .child(desk(p, k, layout, monitors, selected));
-    if let Some(monitor) = monitors.get(selected) {
-        page = page.child(monitor_section(p, k, layout, monitor, selected, layer));
+    let mut page = col().gap(space::S6).child(ui::page_header(
+        p,
+        title,
+        vec![ui::button(
+            k,
+            "apply-now",
+            if s.applying {
+                "Applying\u{2026}"
+            } else {
+                "Apply now"
+            },
+            ButtonVariant::Contrast,
+            !s.applying && s.problems().is_empty(),
+            |s, _| s.apply_now(),
+        )],
+    ));
+    if let Some(message) = &s.apply_message {
+        page = page.child(ui::notice(p, "apply-message", message));
+    }
+    page = page.child(desk(p, k, s, layout, edited.as_ref()));
+    let monitor = edited.as_ref().and_then(|id| s.model.draft.monitor(id));
+    if let Some(monitor) = monitor {
+        page = page.child(monitor_section(p, k, s, layout, monitor, layer));
     }
     page.child(layout_section(p, k, s, index))
 }
 
-fn role_of<'a>(layout: &'a Layout, monitor: &MonitorConfig) -> Option<&'a Role> {
-    layout
-        .monitors
-        .iter()
-        .find(|entry| entry.id == monitor.id)
-        .map(|entry| &entry.role)
-}
-
-/// The picture of the desk: one tile per monitor, coloured by what it shows in this layout.
-fn desk(p: Paint, k: &Kit, layout: &Layout, monitors: &[MonitorConfig], selected: usize) -> El {
-    let mut tiles = row().key("desk").gap(space::S3).center().h(150.0).w_full();
-    for (index, monitor) in monitors.iter().enumerate() {
-        tiles = tiles.child(tile(
+/// The picture of the desk: one tile per monitor, placed as on the real desk and coloured by
+/// what it shows in this layout.
+fn desk(p: Paint, k: &Kit, s: &Settings, layout: &Layout, edited: Option<&MonitorId>) -> El {
+    let config = &s.model.draft;
+    let mut stage = el().key("desk").size(DESK.0, DESK.1);
+    for rect in desk_rects(&s.snapshot, config, DESK) {
+        let Some(index) = config
+            .monitors
+            .iter()
+            .position(|monitor| monitor.id == rect.id)
+        else {
+            continue;
+        };
+        let monitor = &config.monitors[index];
+        let role = layout
+            .monitors
+            .iter()
+            .find(|entry| entry.id == monitor.id)
+            .map(|entry| &entry.role);
+        stage = stage.child(tile(
             p,
             index,
             monitor,
-            role_of(layout, monitor),
-            index == selected,
+            role,
+            &rect,
+            edited == Some(&monitor.id),
         ));
     }
-    if monitors.is_empty() {
-        tiles = tiles.child(ui::note(p, "No monitors yet. See the Monitors page."));
-    }
-    ui::card(p).child(tiles).child(
+    let picture = if config.monitors.is_empty() {
+        row()
+            .h(DESK.1)
+            .center()
+            .child(ui::note(p, "No monitors yet. See the Monitors page."))
+    } else {
+        row().center().child(stage)
+    };
+    ui::card(p).child(picture).child(
         row()
             .px(space::S3)
             .pb(space::S2)
@@ -82,7 +247,7 @@ fn desk(p: Paint, k: &Kit, layout: &Layout, monitors: &[MonitorConfig], selected
             .center_y()
             .justify_between()
             .child(
-                text("")
+                text(layout_summary(config, layout))
                     .key("summary")
                     .font(type_::BODY)
                     .color(p.t.text_secondary)
@@ -96,7 +261,7 @@ fn desk(p: Paint, k: &Kit, layout: &Layout, monitors: &[MonitorConfig], selected
                 "Identify",
                 ButtonVariant::Neutral,
                 true,
-                |_| {},
+                |s, _| s.identify(),
             )),
     )
 }
@@ -106,6 +271,7 @@ fn tile(
     index: usize,
     monitor: &MonitorConfig,
     role: Option<&Role>,
+    rect: &DeskRect,
     selected: bool,
 ) -> El {
     let (fill, ink, status) = match role {
@@ -119,8 +285,12 @@ fn tile(
         ),
     };
     let outlined = fill == Color::TRANSPARENT;
+    // The selection ring is drawn in a 3 pt margin kept free around every screen, so
+    // selecting a monitor moves nothing.
+    let ring = 3.0;
     let screen = col()
-        .size(168.0, 100.0)
+        .w_full()
+        .h_full()
         .center()
         .gap(2.0)
         .radius(radius::MD)
@@ -140,13 +310,14 @@ fn tile(
         )
         .child(text(monitor.label.as_str()).font(type_::TITLE).color(ink))
         .child(text(status).font(type_::LABEL).color(ink.alpha(0.85)));
-    // The ring sits outside the screen so selecting a monitor does not move anything.
     el().key(format!("desk-monitor-{index}"))
         .role("button")
         .label(monitor.label.as_str())
         .focusable(true)
-        .padding(3.0)
-        .radius(radius::MD + 3.0)
+        .absolute(rect.x, rect.y)
+        .size(rect.w, rect.h)
+        .padding(ring)
+        .radius(radius::MD + ring)
         .border(
             2.0,
             if selected {
@@ -155,25 +326,22 @@ fn tile(
                 Color::TRANSPARENT
             },
         )
+        .on_press(move |s: &mut Settings| s.select_monitor(index))
         .child(screen)
 }
 
 fn monitor_section(
     p: Paint,
     k: &Kit,
+    s: &Settings,
     layout: &Layout,
     monitor: &MonitorConfig,
-    index: usize,
     layer: &mut Vec<El>,
 ) -> El {
-    let role = role_of(layout, monitor);
-    let choice = match role {
-        Some(Role::Pc) => 0,
-        Some(Role::Other { .. }) => 1,
-        Some(Role::Off) => 2,
-        None => 3,
-    };
-    let blocked = [false, !monitor.pc_input_confirmed, false, false];
+    let config = &s.model.draft;
+    let choice = role_choice(layout, &monitor.id);
+    let blocked = present::another_device_blocked(config, &monitor.id);
+    let labels = RoleChoice::ALL.map(RoleChoice::label);
     let mut rows = vec![ui::setting_row(
         p,
         "shows",
@@ -181,51 +349,70 @@ fn monitor_section(
         ui::segmented(
             p,
             "role",
-            &ROLE_LABELS,
-            Some(choice),
-            &blocked,
+            &labels,
+            RoleChoice::ALL.iter().position(|&each| each == choice),
+            &[false, blocked.is_some(), false, false],
             104.0,
-            |_, _| {},
+            |s, index| s.set_role(RoleChoice::ALL[index]),
         ),
     )];
-    if !monitor.pc_input_confirmed {
-        rows.push(ui::note_row(
-            p,
-            "role-blocked",
-            "To hand this monitor to another device, first confirm on the Monitors page which \
-             input this PC is plugged into.",
-        ));
+    if let Some(reason) = blocked {
+        rows.push(ui::note_row(p, "role-blocked", reason));
     }
-    match role {
-        Some(Role::Other { input }) => {
-            let names: Vec<String> = input_choices(monitor)
+    match choice {
+        RoleChoice::AnotherDevice => {
+            let names: Vec<String> = present::other_inputs(config, &monitor.id)
                 .into_iter()
-                .filter(|&choice| Some(choice) != monitor.pc_input)
                 .map(input_name)
                 .collect();
-            let current = input_name(*input);
+            let current = layout
+                .monitors
+                .iter()
+                .find(|entry| entry.id == monitor.id)
+                .and_then(|entry| match entry.role {
+                    Role::Other { input } => Some(input_name(input)),
+                    _ => None,
+                });
             rows.push(ui::setting_row(
                 p,
                 "input",
                 "The other device is plugged into",
-                Select::new("other-input", &names)
-                    .current(Some(&current))
-                    .label("The other device is plugged into")
-                    .width(FIELD_WIDTH)
-                    .build(k, layer),
+                ui::dropdown(
+                    k,
+                    s,
+                    Dropdown {
+                        key: "other-input".to_owned(),
+                        label: "The other device is plugged into",
+                        options: &names,
+                        current: current.as_deref(),
+                        width: FIELD_WIDTH,
+                    },
+                    |s, name| s.set_other_input(name),
+                    layer,
+                ),
             ));
         }
-        Some(Role::Pc) => rows.push(ui::setting_row_note(
+        RoleChoice::ThisPc => rows.push(ui::setting_row_note(
             p,
             "main",
             "Main monitor",
             "The taskbar and new windows appear on the main monitor.",
-            el().key("main-monitor")
-                .child(ui::toggle(p, layout.primary.as_ref() == Some(&monitor.id))),
+            ui::toggle(
+                p,
+                "main-monitor",
+                layout.primary.as_ref() == Some(&monitor.id),
+                true,
+                Settings::toggle_primary,
+            ),
         )),
-        _ => {}
+        RoleChoice::Off | RoleChoice::DontChange => {}
     }
-    let title = format!("Monitor {} \u{00B7} {}", index + 1, monitor.label);
+    let number = config
+        .monitors
+        .iter()
+        .position(|each| each.id == monitor.id)
+        .map_or(0, |index| index + 1);
+    let title = format!("Monitor {number} \u{00B7} {}", monitor.label);
     ui::section(p, "monitor", &title, rows)
 }
 
@@ -238,6 +425,8 @@ fn layout_section(p: Paint, k: &Kit, s: &Settings, index: usize) -> El {
             TextInput::new(&s.edits.layout_name)
                 .label("Name")
                 .width(Some(FIELD_WIDTH))
+                .on_edit(|s: &mut Settings| &mut s.edits.layout_name)
+                .on_change(|s: &mut Settings, _| s.layout_name_changed())
                 .build(k),
         ),
     )];
@@ -251,6 +440,10 @@ fn layout_section(p: Paint, k: &Kit, s: &Settings, index: usize) -> El {
             })
             .label("Hotkey for this layout")
             .width(FIELD_WIDTH)
+            .error_message(ui::hotkey_refusal)
+            .on_change(move |s: &mut Settings, shortcut, _| {
+                s.set_hotkey(HotkeyTarget::Layout(index), shortcut)
+            })
             .build(k),
         ));
     }
@@ -261,10 +454,14 @@ fn layout_section(p: Paint, k: &Kit, s: &Settings, index: usize) -> El {
         ui::button(
             k,
             "delete-layout",
-            "Delete",
+            if s.confirm_delete {
+                "Really delete?"
+            } else {
+                "Delete"
+            },
             ButtonVariant::Danger,
             true,
-            |_| {},
+            |s, _| s.delete_layout(),
         ),
     ));
     ui::section(p, "layout", "Layout", rows)
