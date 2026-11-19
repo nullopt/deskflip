@@ -3,8 +3,8 @@
 use std::thread;
 use std::time::Duration;
 
-use rune::tok::{TextStyle, radius, space};
-use rune::{AppSpec, Cx, El, WindowOptions, WindowSpec, col, row, text};
+use rune::tok::{TextStyle, space};
+use rune::{AppSpec, Cx, El, WindowOptions, WindowSpec, row, text};
 
 use super::model::Model;
 use super::{HANDLE, Settings, ui};
@@ -15,8 +15,8 @@ pub const SHOWN_FOR: Duration = Duration::from_secs(3);
 
 const NUMBER: TextStyle = TextStyle::new(40.0, 700.0);
 const LABEL: TextStyle = TextStyle::new(15.0, 500.0);
-/// How far the tag sits from the monitor's edges, clear of the taskbar.
-const MARGIN: f32 = 64.0;
+/// The tag's size in points on a 1080p monitor at 100% scaling.
+const TAG: (f32, f32) = (200.0, 72.0);
 
 /// What to show on one monitor, and where that monitor is on the desktop.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -52,34 +52,40 @@ pub fn badges(snapshot: &Snapshot, model: &Model) -> Vec<Badge> {
         .collect()
 }
 
-/// The badge window: transparent and as large as its monitor, with a small tag in the bottom
-/// left corner, out of the way of whatever is on screen.
+/// Where the tag's window goes on a monitor at `position` of `size`, both in desktop pixels:
+/// its top left corner and its size. Bottom left, clear of the taskbar, and scaled with the
+/// monitor so it reads the same on a 4K screen as on a 1080p one.
+pub fn tag_geometry(position: (i32, i32), size: (u32, u32)) -> ((i32, i32), (u32, u32)) {
+    let scale = (size.1 as f32 / 1080.0).clamp(1.0, 2.0);
+    let pixels = |points: f32| (points * scale).round() as i32;
+    let (width, height) = (pixels(TAG.0), pixels(TAG.1));
+    (
+        (
+            position.0 + pixels(48.0),
+            position.1 + size.1 as i32 - height - pixels(96.0),
+        ),
+        (width as u32, height as u32),
+    )
+}
+
+/// The tag: a small opaque window, so nothing behind it is covered or dimmed.
 fn view(badge: &Badge, cx: &mut Cx<Badge>) -> El {
     let dark = cx.system_dark();
     let theme = rune::tok::theme(dark);
-    let tag = row()
+    row()
         .key("badge")
-        .px(space::S3 + space::S1)
-        .py(space::S2)
+        .w_full()
+        .h_full()
+        .center()
         .gap(space::S3)
-        .center_y()
-        .radius(radius::LG)
-        .fill(theme.card.alpha(0.94))
+        .fill(theme.card)
         .border(1.0, theme.card_border)
-        .shadow(4.0, 16.0, theme.shadow)
         .child(
             text(badge.number.to_string())
                 .font(NUMBER)
                 .color(rune::tok::accent(0, dark)),
         )
-        .child(text(badge.label.as_str()).font(LABEL).color(theme.text));
-    col()
-        .w_full()
-        .h_full()
-        .padding(MARGIN)
-        .justify_end()
-        .items_start()
-        .child(tag)
+        .child(text(badge.label.as_str()).font(LABEL).color(theme.text))
 }
 
 impl Settings {
@@ -99,18 +105,18 @@ impl Settings {
         let windows: Vec<_> = badges
             .into_iter()
             .map(|badge| {
+                let (position, size) = tag_geometry(badge.position, badge.size);
                 let options = WindowOptions {
-                    transparent: true,
                     borderless: true,
                     click_through: true,
                     always_on_top: true,
                     resizable: false,
-                    position: Some(badge.position),
-                    physical_size: Some(badge.size),
+                    position: Some(position),
+                    physical_size: Some(size),
                     min_size: Some((0.0, 0.0)),
                     ..WindowOptions::default()
                 };
-                let spec = AppSpec::new(ui::APP_NAME, (320.0, 240.0), Badge::default, view);
+                let spec = AppSpec::new(ui::APP_NAME, TAG, Badge::default, view);
                 rune::open_window(
                     WindowSpec::new(format!("identify-{}", badge.number), spec)
                         .state(badge)

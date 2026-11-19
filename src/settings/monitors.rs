@@ -127,9 +127,14 @@ impl Settings {
             }
         }
         self.snapshot = snapshot;
+        let known = self.model.draft.monitors.len();
         self.model.merge(&detected);
         self.detecting = false;
-        self.sync_fields();
+        // Rebuilding the fields would throw away whatever is being typed, so it is done only
+        // when there is a new monitor to make fields for.
+        if self.model.draft.monitors.len() != known {
+            self.sync_fields();
+        }
     }
 
     /// The name field of monitor `index` was typed into.

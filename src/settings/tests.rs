@@ -783,3 +783,70 @@ fn confirm_now_jumps_from_a_blocked_role_to_the_monitors_page() {
     press(&mut runtime, "confirm-now");
     assert_eq!(runtime.state.page, Page::Monitors);
 }
+
+#[test]
+fn the_identify_tag_sits_in_the_bottom_left_corner_of_its_monitor() {
+    for (position, size) in [
+        ((-2560, -7), (2560, 1440)),
+        ((0, 0), (1920, 1080)),
+        ((1920, 0), (3840, 2160)),
+    ] {
+        let (tag_position, tag_size) = identify::tag_geometry(position, size);
+        let (left, top) = (tag_position.0 - position.0, tag_position.1 - position.1);
+        let (right, bottom) = (left + tag_size.0 as i32, top + tag_size.1 as i32);
+        assert!(left > 0 && top > 0, "inside the monitor: {position:?}");
+        assert!(right < size.0 as i32 / 4, "towards the left: {position:?}");
+        assert!(
+            top > size.1 as i32 * 3 / 4,
+            "towards the bottom: {position:?}"
+        );
+        assert!(
+            bottom < size.1 as i32 - 40,
+            "clear of the taskbar: {position:?}"
+        );
+    }
+}
+
+#[test]
+fn the_identify_tag_grows_with_the_monitor_but_only_so_far() {
+    let small = identify::tag_geometry((0, 0), (1280, 720)).1;
+    let full_hd = identify::tag_geometry((0, 0), (1920, 1080)).1;
+    let huge = identify::tag_geometry((0, 0), (7680, 4320)).1;
+    assert_eq!(small, full_hd, "never smaller than on a 1080p monitor");
+    assert_eq!(
+        huge,
+        (full_hd.0 * 2, full_hd.1 * 2),
+        "never more than twice that"
+    );
+}
+
+#[test]
+fn looking_again_keeps_what_is_being_typed_when_no_monitor_is_new() {
+    let mut settings = scenes::desk();
+    settings.edits.monitor_names[0].text = "Lef".to_owned();
+    let snapshot = settings.snapshot.clone();
+    settings.finish_detect(snapshot, Vec::new());
+    assert_eq!(settings.edits.monitor_names[0].text, "Lef");
+}
+
+#[test]
+fn looking_again_notices_a_monitor_that_came_back_to_this_pc() {
+    let mut settings = scenes::desk();
+    let mut away = settings.snapshot.clone();
+    away.monitors[0].active = false;
+    settings.finish_detect(away, Vec::new());
+    assert!(
+        test_blocked(
+            &settings.model.draft.monitors[0],
+            present::monitor_status(&settings.snapshot, &left()),
+            &settings.test
+        )
+        .is_some()
+    );
+
+    settings.finish_detect(scenes::desk().snapshot, Vec::new());
+    assert_eq!(
+        present::monitor_status(&settings.snapshot, &left()),
+        MonitorStatus::InUse
+    );
+}

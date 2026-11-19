@@ -187,6 +187,7 @@ impl Settings {
 
     pub fn finish_apply(&mut self, result: Result<(), String>) {
         self.applying = false;
+        self.start_detect();
         self.apply_message = result
             .err()
             .map(|error| format!("Could not apply: {error}"));

@@ -436,7 +436,10 @@ pub fn run() -> ExitCode {
     };
     // The window cannot refuse to close, so the process outlives it: a close with unsaved
     // changes brings the window straight back with a question.
-    let app = App::new(spec).keep_running().on_close(on_close);
+    let app = App::new(spec)
+        .keep_running()
+        .on_close(on_close)
+        .on_focus(on_focus);
     // Set once per process; a second call cannot happen.
     let _ = HANDLE.set(app.handle());
     app.run();
@@ -445,6 +448,14 @@ pub fn run() -> ExitCode {
 
 fn setup(s: &mut Settings, _: Waker) {
     if s.load_error.is_none() {
+        s.start_detect();
+    }
+}
+
+/// The monitors may have changed while the window was in the background: a hotkey, the tray
+/// menu or Windows itself can move a monitor on or off this PC.
+fn on_focus(s: &mut Settings, focused: bool, _: &mut Tx) {
+    if focused && s.load_error.is_none() && !s.detecting {
         s.start_detect();
     }
 }
