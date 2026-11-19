@@ -69,18 +69,8 @@ pub enum CloseAction {
     Quit,
     /// Ask what to do with the unsaved changes.
     Prompt,
-    /// A monitor is showing another input for a test; stay alive to bring it back.
-    WaitForTest,
-}
-
-pub fn close_action(dirty: bool, testing: bool) -> CloseAction {
-    if dirty {
-        CloseAction::Prompt
-    } else if testing {
-        CloseAction::WaitForTest
-    } else {
-        CloseAction::Quit
-    }
+    /// The monitors are in the middle of a test or a layout change; stay alive to finish it.
+    Wait,
 }
 
 /// The hotkey fields. Each remembers whether it is waiting for a key press.
@@ -135,8 +125,8 @@ pub struct Settings {
     pub test: TestState,
     /// The input each monitor's "Try another input" row will switch to.
     pub test_choice: HashMap<MonitorId, InputCode>,
-    /// The window was closed while a test was running; quit once the monitor is back.
-    pub quit_after_test: bool,
+    /// The window was closed while the monitors were busy; quit once they are done.
+    pub quit_when_idle: bool,
     /// The numbers are on the monitors right now.
     pub identifying: bool,
     /// Whether Windows starts Deskflip at sign-in. Lives in the registry, not in the draft.
@@ -187,7 +177,7 @@ impl Settings {
             apply_message: None,
             test: TestState::Idle,
             test_choice: HashMap::new(),
-            quit_after_test: false,
+            quit_when_idle: false,
             identifying: false,
             start_with_windows: false,
             autostart_error: None,
@@ -225,6 +215,25 @@ impl Settings {
                 .collect(),
             custom_codes: draft.monitors.iter().map(|_| TextEdit::new("")).collect(),
         };
+    }
+
+    /// Whether this window is changing the monitors right now. One change runs at a time: a
+    /// second would talk to the monitors over the first.
+    pub fn busy(&self) -> bool {
+        self.applying || self.test == TestState::Running
+    }
+
+    pub fn close_action(&self) -> CloseAction {
+        if self.load_error.is_some() {
+            // Nothing was loaded, so there is nothing to save or lose.
+            CloseAction::Quit
+        } else if self.model.is_dirty() {
+            CloseAction::Prompt
+        } else if self.busy() {
+            CloseAction::Wait
+        } else {
+            CloseAction::Quit
+        }
     }
 
     pub fn go_to(&mut self, page: Page) {
@@ -467,15 +476,15 @@ fn setup(s: &mut Settings, _: Waker) {
 /// The monitors may have changed while the window was in the background: a hotkey, the tray
 /// menu or Windows itself can move a monitor on or off this PC.
 fn on_focus(s: &mut Settings, focused: bool, _: &mut Tx) {
-    if focused && s.load_error.is_none() && !s.detecting {
-        s.start_detect();
+    if focused && s.load_error.is_none() {
+        s.glance();
     }
 }
 
 fn on_close(s: &mut Settings, tx: &mut Tx) {
-    match close_action(s.model.is_dirty(), s.test == TestState::Running) {
+    match s.close_action() {
         CloseAction::Quit => tx.quit(),
-        CloseAction::WaitForTest => s.quit_after_test = true,
+        CloseAction::Wait => s.quit_when_idle = true,
         CloseAction::Prompt => {
             s.close_prompt = true;
             if let Some(handle) = HANDLE.get() {

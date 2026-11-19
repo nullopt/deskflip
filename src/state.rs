@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Layout};
 use crate::display::{MonitorId, Rect, Snapshot};
+use crate::paths;
 use crate::plan::plan;
 use crate::validate::layout_is_usable;
 
@@ -45,32 +46,45 @@ impl State {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
         let text = toml::to_string(self).map_err(io::Error::other)?;
-        fs::write(path, text)
+        paths::replace_file(path, &text)
     }
 }
 
 impl State {
     /// Notes where the monitors in `snapshot` are. Returns whether anything changed.
     pub fn remember(&mut self, snapshot: &Snapshot) -> bool {
+        let on_desktop: Vec<Position> = snapshot
+            .monitors
+            .iter()
+            .filter_map(|monitor| {
+                let rect = monitor.rect?;
+                Some(Position {
+                    id: monitor.id.clone(),
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+            })
+            .collect();
         let mut changed = false;
-        for monitor in &snapshot.monitors {
-            let Some(rect) = monitor.rect else { continue };
-            let seen = Position {
-                id: monitor.id.clone(),
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
-            };
-            match self
-                .positions
-                .iter_mut()
-                .find(|known| known.id == monitor.id)
-            {
+
+        // Windows measures positions from the main monitor. When another monitor becomes the
+        // main one, every monitor on the desktop moves by the same amount, and the ones off
+        // the desktop have to move with them to keep their place beside the others.
+        if let Some((dx, dy)) = self.shift_of_origin(&on_desktop) {
+            for known in &mut self.positions {
+                if !on_desktop.iter().any(|seen| seen.id == known.id) {
+                    known.x += dx;
+                    known.y += dy;
+                    changed = true;
+                }
+            }
+        }
+
+        for seen in on_desktop {
+            match self.positions.iter_mut().find(|known| known.id == seen.id) {
                 Some(known) if *known == seen => {}
                 Some(known) => {
                     *known = seen;
@@ -83,6 +97,18 @@ impl State {
             }
         }
         changed
+    }
+
+    /// How far the monitors remembered and still on the desktop have all moved together, if
+    /// they have. Monitors that moved by different amounts were rearranged by the user, which
+    /// says nothing about the others.
+    fn shift_of_origin(&self, on_desktop: &[Position]) -> Option<(i32, i32)> {
+        let mut shifts = on_desktop.iter().filter_map(|seen| {
+            let known = self.positions.iter().find(|known| known.id == seen.id)?;
+            Some((seen.x - known.x, seen.y - known.y))
+        });
+        let first = shifts.next()?;
+        (first != (0, 0) && shifts.all(|shift| shift == first)).then_some(first)
     }
 
     /// Where a monitor was when last seen on the desktop.
@@ -186,6 +212,49 @@ mod tests {
         }));
         assert_eq!(state.position(&id("L")).map(|rect| rect.x), Some(2560));
         assert_eq!(state.positions.len(), 1);
+    }
+
+    #[test]
+    fn a_monitor_off_the_desktop_keeps_its_place_when_the_main_monitor_changes() {
+        // Positions are measured from the main monitor: L, with R to its right.
+        let mut state = State::default();
+        state.remember(&Snapshot {
+            monitors: vec![placed("L", 0), placed("R", 2560)],
+        });
+
+        // L is handed over, so R becomes the main monitor and is now at 0.
+        assert!(state.remember(&Snapshot {
+            monitors: vec![placed("R", 0)],
+        }));
+
+        assert_eq!(state.position(&id("R")).map(|rect| rect.x), Some(0));
+        assert_eq!(state.position(&id("L")).map(|rect| rect.x), Some(-2560));
+    }
+
+    #[test]
+    fn dragging_one_monitor_does_not_move_the_ones_off_the_desktop() {
+        let mut state = State::default();
+        state.remember(&Snapshot {
+            monitors: vec![placed("A", 0), placed("B", 2560), placed("C", 5120)],
+        });
+
+        // C is off the desktop and B was dragged to the other side of A.
+        state.remember(&Snapshot {
+            monitors: vec![placed("A", 0), placed("B", -2560)],
+        });
+
+        assert_eq!(state.position(&id("C")).map(|rect| rect.x), Some(5120));
+    }
+
+    #[test]
+    fn saving_replaces_the_file_and_leaves_nothing_else_behind() {
+        let dir = temp_dir("state-replace");
+        let path = dir.join("state.toml");
+        applied("home").save(&path).unwrap();
+        applied("work").save(&path).unwrap();
+
+        assert_eq!(State::load(&path), applied("work"));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
     }
 
     #[test]

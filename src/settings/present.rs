@@ -306,7 +306,7 @@ pub struct DeskRect {
 
 /// Lays the known monitors out as they sit on the desk, scaled to fit `area`. A monitor
 /// Windows gives no position for (not in use, or not connected) is drawn where it was last
-/// seen; one never seen on the desktop stands in a row to the right.
+/// seen, unless another monitor is there now; one with no place stands in a row to the right.
 pub fn desk_rects(
     snapshot: &Snapshot,
     remembered: &State,
@@ -318,22 +318,34 @@ pub fn desk_rects(
     /// The shape drawn for a monitor when no monitor's real size is known.
     const FALLBACK: (f32, f32) = (2560.0, 1440.0);
 
-    let rect_of = |id: &MonitorId| {
-        snapshot
-            .get(id)
-            .and_then(|found| found.rect)
-            .or_else(|| remembered.position(id))
+    let overlap = |a: &Rect, b: &Rect| {
+        a.x < b.x + b.width as i32
+            && b.x < a.x + a.width as i32
+            && a.y < b.y + b.height as i32
+            && b.y < a.y + a.height as i32
     };
-    let placed: Vec<(&MonitorId, Rect)> = config
+    let mut placed: Vec<(&MonitorId, Rect)> = config
         .monitors
         .iter()
-        .filter_map(|monitor| Some((&monitor.id, rect_of(&monitor.id)?)))
+        .filter_map(|monitor| Some((&monitor.id, snapshot.get(&monitor.id)?.rect?)))
         .collect();
+    // Two monitors drawn on top of each other could not both be clicked, so a remembered
+    // place is used only while nothing else stands there.
+    for monitor in &config.monitors {
+        if placed.iter().any(|(id, _)| *id == &monitor.id) {
+            continue;
+        }
+        if let Some(rect) = remembered.position(&monitor.id)
+            && !placed.iter().any(|(_, taken)| overlap(&rect, taken))
+        {
+            placed.push((&monitor.id, rect));
+        }
+    }
     let unplaced: Vec<&MonitorId> = config
         .monitors
         .iter()
         .map(|monitor| &monitor.id)
-        .filter(|id| rect_of(id).is_none())
+        .filter(|id| !placed.iter().any(|(placed, _)| placed == id))
         .collect();
 
     // Measured in desktop pixels first, then scaled into the picture.
@@ -670,6 +682,30 @@ mod tests {
         assert!(
             (left.x + left.w - right.x).abs() < 0.01,
             "left sits left of right"
+        );
+    }
+
+    #[test]
+    fn desk_rects_never_stack_two_monitors() {
+        // Each monitor was last seen alone on the desktop, so both are remembered at 0.
+        let mut remembered = State::default();
+        remembered.remember(&Snapshot {
+            monitors: vec![placed("L", 0)],
+        });
+        remembered.remember(&Snapshot {
+            monitors: vec![placed("R", 0)],
+        });
+        let now = Snapshot {
+            monitors: vec![placed("R", 0)],
+        };
+        let rects = desk_rects(&now, &remembered, &desk(), (400.0, 200.0));
+
+        assert_eq!(rects.len(), 2);
+        let left = rects.iter().find(|rect| rect.id == id("L")).unwrap();
+        let right = rects.iter().find(|rect| rect.id == id("R")).unwrap();
+        assert!(
+            left.x >= right.x + right.w || right.x >= left.x + left.w,
+            "{left:?} and {right:?} overlap"
         );
     }
 

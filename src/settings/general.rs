@@ -29,24 +29,27 @@ pub fn view(p: Paint, k: &Kit, s: &Settings) -> El {
             ),
         )],
     );
-    let hotkeys = ui::section(
+    let mut hotkey_rows = vec![ui::setting_row_note(
         p,
-        "hotkeys",
-        "Hotkeys",
-        vec![ui::setting_row_note(
-            p,
-            "cycle",
-            "Switch to the next layout",
-            "Each layout can also have a hotkey of its own.",
-            ShortcutRecorder::new("cycle-hotkey", &s.recorders.cycle, |s: &mut Settings| {
-                &mut s.recorders.cycle
-            })
-            .label("Switch to the next layout")
-            .error_message(ui::hotkey_refusal)
-            .on_change(|s: &mut Settings, shortcut, _| s.set_hotkey(HotkeyTarget::Cycle, shortcut))
-            .build(k),
-        )],
-    );
+        "cycle",
+        "Switch to the next layout",
+        "Each layout can also have a hotkey of its own.",
+        ShortcutRecorder::new("cycle-hotkey", &s.recorders.cycle, |s: &mut Settings| {
+            &mut s.recorders.cycle
+        })
+        .label("Switch to the next layout")
+        .error_message(ui::hotkey_refusal)
+        .on_change(|s: &mut Settings, shortcut, _| s.set_hotkey(HotkeyTarget::Cycle, shortcut))
+        .build(k),
+    )];
+    hotkey_rows.extend(ui::unshown_hotkey(
+        p,
+        k,
+        "cycle-hotkey",
+        s.model.draft.cycle_hotkey.as_deref(),
+        HotkeyTarget::Cycle,
+    ));
+    let hotkeys = ui::section(p, "hotkeys", "Hotkeys", hotkey_rows);
     let about = ui::section(
         p,
         "about",

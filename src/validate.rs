@@ -30,6 +30,9 @@ pub enum ProblemKind {
     /// The monitor is sent to another device, but nobody has confirmed which input brings it
     /// back to this PC.
     PcInputUnconfirmed(MonitorId),
+    /// The monitor is sent to the very input this PC is plugged into: it would go on showing
+    /// this PC while Windows stops using it.
+    SentToPcInput(MonitorId),
     PrimaryNotPc(MonitorId),
     /// No monitor would show this PC, and no hotkey leads back to a layout where one does.
     NoWayBack,
@@ -52,6 +55,10 @@ impl Problem {
             }
             ProblemKind::PcInputUnconfirmed(id) => format!(
                 "{} cannot be handed to another device until you confirm which input this PC is plugged into (Monitors page).",
+                label(id)
+            ),
+            ProblemKind::SentToPcInput(id) => format!(
+                "{} would be switched to the input this PC is plugged into. Choose the input the other device uses.",
                 label(id)
             ),
             ProblemKind::PrimaryNotPc(id) => format!(
@@ -78,6 +85,10 @@ impl fmt::Display for ProblemKind {
             Self::PcInputUnconfirmed(id) => write!(
                 f,
                 "Monitor {id} cannot be handed to another device until this PC's input on it is confirmed."
+            ),
+            Self::SentToPcInput(id) => write!(
+                f,
+                "Monitor {id} would be switched to the input this PC is plugged into."
             ),
             Self::PrimaryNotPc(id) => write!(
                 f,
@@ -127,10 +138,12 @@ pub fn validate(config: &Config) -> Vec<Problem> {
                 report(ProblemKind::UnknownMonitor(entry.id.clone()));
                 continue;
             };
-            if matches!(entry.role, Role::Other { .. })
-                && !(monitor.pc_input.is_some() && monitor.pc_input_confirmed)
-            {
-                report(ProblemKind::PcInputUnconfirmed(entry.id.clone()));
+            if let Role::Other { input } = entry.role {
+                if !(monitor.pc_input.is_some() && monitor.pc_input_confirmed) {
+                    report(ProblemKind::PcInputUnconfirmed(entry.id.clone()));
+                } else if monitor.pc_input == Some(input) {
+                    report(ProblemKind::SentToPcInput(entry.id.clone()));
+                }
             }
         }
 
@@ -210,7 +223,7 @@ fn has_way_back(config: &Config, hidden: usize, cycle_works: bool) -> bool {
 mod tests {
     use super::*;
     use crate::config::Role;
-    use crate::testing::{HDMI1, config, desk, id, layout, monitor};
+    use crate::testing::{HDMI1, HDMI2, config, desk, id, layout, monitor};
 
     fn kinds(config: &Config) -> Vec<ProblemKind> {
         validate(config)
@@ -235,6 +248,20 @@ mod tests {
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].layout.as_deref(), Some("work"));
         assert_eq!(problems[0].kind, ProblemKind::PcInputUnconfirmed(id("L")));
+        assert!(!layout_is_usable(&config, "work"));
+        assert!(layout_is_usable(&config, "home"));
+    }
+
+    #[test]
+    fn a_monitor_cannot_be_handed_to_the_input_this_pc_is_on() {
+        let mut config = desk();
+        config.monitors[0].pc_input = Some(HDMI2);
+
+        let problems = validate(&config);
+
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].kind, ProblemKind::SentToPcInput(id("L")));
+        assert!(problems[0].message(&config).starts_with("L "));
         assert!(!layout_is_usable(&config, "work"));
         assert!(layout_is_usable(&config, "home"));
     }

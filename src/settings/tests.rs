@@ -151,14 +151,36 @@ fn pressing_discard_in_the_bar_discards() {
 
 #[test]
 fn closing_while_clean_quits_and_closing_while_dirty_prompts() {
-    assert_eq!(close_action(false, false), CloseAction::Quit);
-    assert_eq!(close_action(true, false), CloseAction::Prompt);
+    assert_eq!(scenes::desk().close_action(), CloseAction::Quit);
+    assert_eq!(scenes::unsaved().close_action(), CloseAction::Prompt);
 }
 
 #[test]
 fn closing_during_an_input_test_waits_for_it() {
-    assert_eq!(close_action(false, true), CloseAction::WaitForTest);
-    assert_eq!(close_action(true, true), CloseAction::Prompt);
+    let mut clean = scenes::desk();
+    clean.test = TestState::Running;
+    assert_eq!(clean.close_action(), CloseAction::Wait);
+
+    let mut dirty = scenes::unsaved();
+    dirty.test = TestState::Running;
+    assert_eq!(dirty.close_action(), CloseAction::Prompt);
+}
+
+#[test]
+fn closing_while_a_layout_is_being_applied_waits_for_it() {
+    let mut settings = scenes::desk();
+    settings.applying = true;
+    assert_eq!(settings.close_action(), CloseAction::Wait);
+}
+
+#[test]
+fn the_unreadable_file_screen_can_always_be_closed() {
+    let settings = scenes::load_error();
+    assert!(
+        settings.model.is_dirty(),
+        "nothing was loaded, so nothing is saved"
+    );
+    assert_eq!(settings.close_action(), CloseAction::Quit);
 }
 
 #[test]
@@ -337,25 +359,38 @@ fn test_button_needs_confirmation_an_active_monitor_and_no_running_test() {
     let running = TestState::Running;
 
     assert_eq!(
-        test_blocked(confirmed, MonitorStatus::InUse, &TestState::Idle),
+        test_blocked(confirmed, MonitorStatus::InUse, &TestState::Idle, false),
         None
     );
     assert_eq!(
-        test_blocked(&unconfirmed, MonitorStatus::InUse, &TestState::Idle),
+        test_blocked(&unconfirmed, MonitorStatus::InUse, &TestState::Idle, false),
         Some("Switch on the confirmation above first.")
     );
     assert_eq!(
         test_blocked(
             confirmed,
             MonitorStatus::ConnectedNotInUse,
-            &TestState::Idle
+            &TestState::Idle,
+            false
         ),
         Some("This PC is not using this monitor right now.")
     );
     assert_eq!(
-        test_blocked(confirmed, MonitorStatus::InUse, &running),
+        test_blocked(confirmed, MonitorStatus::InUse, &running, false),
         Some("A test is already running.")
     );
+    assert_eq!(
+        test_blocked(confirmed, MonitorStatus::InUse, &TestState::Idle, true),
+        Some("A layout is being applied.")
+    );
+}
+
+#[test]
+fn a_test_does_not_start_while_a_layout_is_being_applied() {
+    let mut settings = scenes::desk();
+    settings.applying = true;
+    settings.start_test(0);
+    assert_eq!(settings.test, TestState::Idle);
 }
 
 #[test]
@@ -439,7 +474,7 @@ fn finishing_a_test_records_the_result() {
 fn finishing_a_test_after_the_window_closed_lets_the_app_quit() {
     let mut settings = scenes::desk();
     settings.start_test(0);
-    settings.quit_after_test = true;
+    settings.quit_when_idle = true;
     assert!(settings.finish_test(Ok(())));
 }
 
@@ -631,10 +666,27 @@ fn apply_now_does_not_apply_when_the_save_fails() {
 }
 
 #[test]
+fn apply_now_waits_for_a_running_input_test() {
+    let mut settings = scenes::desk();
+    settings.test = TestState::Running;
+    settings.apply_now();
+    assert!(!settings.applying);
+}
+
+#[test]
+fn finishing_an_apply_after_the_window_closed_lets_the_app_quit() {
+    let mut settings = scenes::desk();
+    settings.applying = true;
+    settings.quit_when_idle = true;
+    assert!(settings.finish_apply(Ok(())));
+}
+
+#[test]
 fn finishing_an_apply_shows_what_happened() {
     let mut settings = scenes::desk();
     settings.applying = true;
-    settings.finish_apply(Err("the monitor did not answer".to_owned()));
+    let quit = settings.finish_apply(Err("the monitor did not answer".to_owned()));
+    assert!(!quit);
     assert!(!settings.applying);
     assert_eq!(
         settings.apply_message.as_deref(),
@@ -843,7 +895,8 @@ fn looking_again_notices_a_monitor_that_came_back_to_this_pc() {
         test_blocked(
             &settings.model.draft.monitors[0],
             present::monitor_status(&settings.snapshot, &left()),
-            &settings.test
+            &settings.test,
+            false
         )
         .is_some()
     );
@@ -920,4 +973,77 @@ fn each_sections_button_does_that_sections_job() {
     let mut settings = saving_to("guide-save", scenes::first_run());
     settings.guide_action(3);
     assert!(!settings.model.is_dirty());
+}
+
+// --- after the review ---
+
+#[test]
+fn glancing_at_the_desktop_updates_what_is_in_use_and_leaves_the_draft_alone() {
+    let mut settings = scenes::desk();
+    settings.see(scenes::desk().snapshot);
+    settings.edits.monitor_names[0].text = "Lef".to_owned();
+
+    let mut away = settings.snapshot.clone();
+    away.monitors[0].active = false;
+    away.monitors[0].rect = None;
+    settings.see(away);
+
+    assert_eq!(
+        present::monitor_status(&settings.snapshot, &left()),
+        MonitorStatus::ConnectedNotInUse
+    );
+    assert!(!settings.model.is_dirty());
+    assert_eq!(settings.edits.monitor_names[0].text, "Lef");
+    assert!(
+        settings.desk_memory.position(&left()).is_some(),
+        "still drawn where it was"
+    );
+}
+
+#[test]
+fn a_hotkey_the_field_cannot_show_is_named_and_can_be_removed() {
+    let written = "Ctrl+Alt+Numpad1";
+    assert!(
+        crate::hotkey::parse(written).is_ok(),
+        "the tray registers it"
+    );
+    assert!(shortcut_of(written).is_none(), "the field cannot show it");
+
+    let mut settings = scenes::desk();
+    settings.model.draft.layouts[1].hotkey = Some(written.to_owned());
+    settings.sync_fields();
+    let runtime = window(settings);
+    assert!(runtime.find("layout-hotkey-unshown").is_some());
+    assert!(runtime.find("layout-hotkey-remove").is_some());
+
+    let mut settings = runtime.state;
+    assert!(settings.set_hotkey(HotkeyTarget::Layout(1), None).is_ok());
+    assert_eq!(settings.model.draft.layouts[1].hotkey, None);
+    assert!(window(settings).find("layout-hotkey-unshown").is_none());
+}
+
+#[test]
+fn a_hotkey_the_field_can_show_gets_no_extra_row() {
+    let runtime = window(scenes::desk());
+    assert!(runtime.find("layout-hotkey-unshown").is_none());
+    let general = window(scenes::on_page(scenes::desk(), Page::General));
+    assert!(general.find("cycle-hotkey-unshown").is_none());
+}
+
+#[test]
+fn a_cycle_hotkey_the_field_cannot_show_is_named_too() {
+    let mut settings = scenes::on_page(scenes::desk(), Page::General);
+    settings.model.draft.cycle_hotkey = Some("Ctrl+Alt+Numpad1".to_owned());
+    settings.sync_fields();
+    assert!(window(settings).find("cycle-hotkey-unshown").is_some());
+}
+
+#[test]
+fn a_layout_sent_to_the_pcs_own_input_cannot_be_saved() {
+    let mut settings = saving_to("pc-input-clash", scenes::desk());
+    // The work layout sends the left monitor to HDMI 2; now this PC is said to be on it.
+    settings.set_pc_input(0, "HDMI 2");
+    settings.toggle_confirmed(0);
+    assert!(!settings.problems().is_empty());
+    assert!(!settings.save());
 }

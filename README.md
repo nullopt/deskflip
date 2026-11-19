@@ -81,7 +81,10 @@ With no command, Deskflip runs in the system tray. A log is kept at
   between ports makes them new monitors; name and confirm them again.
 - **Deskflip cannot see what a monitor is showing**, so it cannot react when you plug the laptop
   in. Monitors report their PC input even while displaying another one.
-- The settings window draws with the GPU (DirectX 12 or Vulkan). The tray icon does not.
+- **Hotkeys are recorded by key position and named as on a US keyboard.** On another keyboard
+  layout the field can show a different letter from the one you pressed; the key it shows is
+  the one that works.
+- The settings window draws with the GPU (DirectX 12). The tray icon does not.
 
 ## Build from source
 

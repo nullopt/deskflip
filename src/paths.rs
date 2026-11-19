@@ -4,6 +4,8 @@
 //! machine-specific state and logs live under `%LOCALAPPDATA%`.
 
 use std::env;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "Deskflip";
@@ -30,6 +32,19 @@ pub fn state_file_in(local: &Path) -> PathBuf {
 
 pub fn log_file_in(local: &Path) -> PathBuf {
     local.join(APP_DIR).join("deskflip.log")
+}
+
+/// Writes a file so that it is always whole: the text goes to a temporary file beside it,
+/// which then takes its place. Another process reading meanwhile sees the old file or the new
+/// one, never half of either.
+pub fn replace_file(path: &Path, text: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    fs::write(&temp, text)?;
+    fs::rename(&temp, path)
 }
 
 /// Windows always sets these variables for an interactive user. If one is missing we fall back

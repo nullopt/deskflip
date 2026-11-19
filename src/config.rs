@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::display::MonitorId;
 use crate::input::InputCode;
+use crate::paths;
 
 /// The settings file format this build reads and writes.
 pub const VERSION: u32 = 1;
@@ -122,13 +123,7 @@ impl Config {
     /// new contents go to a temporary file that then replaces the old one.
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let text = toml::to_string_pretty(self)?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let mut temp = path.as_os_str().to_owned();
-        temp.push(".tmp");
-        fs::write(&temp, text)?;
-        fs::rename(&temp, path)?;
+        paths::replace_file(path, &text)?;
         Ok(())
     }
 

@@ -169,7 +169,7 @@ impl Settings {
         let Some(index) = self.current_layout() else {
             return;
         };
-        if self.applying || (self.model.is_dirty() && !self.save()) {
+        if self.busy() || (self.model.is_dirty() && !self.save()) {
             return;
         }
         let name = self.model.draft.layouts[index].name.clone();
@@ -181,16 +181,25 @@ impl Settings {
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             },
-            |s, result, _| s.finish_apply(result),
+            |s, result, tx| {
+                if s.finish_apply(result) {
+                    tx.quit();
+                }
+            },
         );
     }
 
-    pub fn finish_apply(&mut self, result: Result<(), String>) {
+    /// Records how the layout change ended. Returns whether the app should now quit, which is
+    /// the case when the window was closed while the change was under way.
+    pub fn finish_apply(&mut self, result: Result<(), String>) -> bool {
         self.applying = false;
-        self.start_detect();
         self.apply_message = result
             .err()
             .map(|error| format!("Could not apply: {error}"));
+        if !self.quit_when_idle {
+            self.start_detect();
+        }
+        self.quit_when_idle
     }
 }
 
@@ -216,7 +225,7 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, index: usize, layer: &mut Vec<El>) 
                 "Apply now"
             },
             ButtonVariant::Contrast,
-            !s.applying && s.problems().is_empty(),
+            !s.busy() && s.problems().is_empty(),
             |s, _| s.apply_now(),
         )],
     ));
@@ -486,6 +495,14 @@ fn layout_section(p: Paint, k: &Kit, s: &Settings, index: usize) -> El {
             .build(k),
         ));
     }
+    let stored = s.model.draft.layouts.get(index);
+    rows.extend(ui::unshown_hotkey(
+        p,
+        k,
+        "layout-hotkey",
+        stored.and_then(|layout| layout.hotkey.as_deref()),
+        HotkeyTarget::Layout(index),
+    ));
     rows.push(ui::setting_row(
         p,
         "delete",

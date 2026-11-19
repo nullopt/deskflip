@@ -4,8 +4,9 @@ use rune::tok::{self, TextStyle, Theme, motion, radius, space, type_};
 use rune::{Color, Cx, El, Shortcut, ShortcutError, Tx, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, Select};
 
-use super::present::{GuideStep, open_step};
-use super::{Page, Settings};
+use super::present::{GuideStep, open_step, shortcut_of};
+use super::{HotkeyTarget, Page, Settings};
+use crate::hotkey;
 
 /// The title of windows that are not the settings window itself.
 pub const APP_NAME: &str = "Deskflip";
@@ -332,6 +333,38 @@ pub fn hotkey_refusal(error: &ShortcutError, shortcut: Option<&Shortcut>) -> Str
         (_, None) => "That key can't be part of a hotkey.".to_owned(),
         (_, Some(chord)) => format!("{chord} can't be used."),
     }
+}
+
+/// A row naming a stored hotkey that its field cannot show: one written into the settings
+/// file by hand with a key the field does not know. Without it the hotkey would work unseen,
+/// and the field, showing nothing, would have nothing to clear.
+pub fn unshown_hotkey(
+    p: Paint,
+    k: &Kit,
+    key: &str,
+    stored: Option<&str>,
+    target: HotkeyTarget,
+) -> Option<El> {
+    let stored = stored.filter(|text| shortcut_of(text).is_none())?;
+    let message = format!(
+        "Set to {} in the settings file. This field cannot show that key.",
+        hotkey::pretty(stored)
+    );
+    Some(
+        note_row(p, &format!("{key}-unshown"), &message)
+            .gap(space::S3)
+            .child(button(
+                k,
+                &format!("{key}-remove"),
+                "Remove",
+                ButtonVariant::Neutral,
+                true,
+                move |s, _| {
+                    // Clearing a hotkey is never refused.
+                    let _ = s.set_hotkey(target, None);
+                },
+            )),
+    )
 }
 
 /// A line of news about something the user just did.

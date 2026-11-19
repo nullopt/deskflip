@@ -17,6 +17,7 @@ use crate::display::{Display, DisplayError, Snapshot, WindowsDisplay};
 use crate::input::{InputCode, input_name, parse_input_codes};
 use crate::paths;
 use crate::state::State;
+use crate::win::{APPLY_MUTEX, NamedMutex};
 
 const FIELD_WIDTH: f32 = 220.0;
 
@@ -91,11 +92,14 @@ pub fn test_blocked(
     monitor: &MonitorConfig,
     status: MonitorStatus,
     test: &TestState,
+    applying: bool,
 ) -> Option<&'static str> {
     if !monitor.pc_input_confirmed {
         Some("Switch on the confirmation above first.")
     } else if status != MonitorStatus::InUse {
         Some("This PC is not using this monitor right now.")
+    } else if applying {
+        Some("A layout is being applied.")
     } else if *test == TestState::Running {
         Some("A test is already running.")
     } else {
@@ -109,24 +113,51 @@ pub fn parse_code(text: &str) -> Option<u8> {
 }
 
 impl Settings {
+    /// Asks the monitors what they support. Not while a test or a layout change is talking
+    /// to them.
     pub fn start_detect(&mut self) {
+        if self.detecting || self.busy() {
+            return;
+        }
         self.detecting = in_background(detect, |s, (snapshot, detected), _| {
             s.finish_detect(snapshot, detected);
         });
     }
 
-    pub fn finish_detect(&mut self, snapshot: Snapshot, detected: Vec<Detected>) {
+    /// Looks at the desktop again without asking the monitors anything, which makes it safe
+    /// at any moment, even in the middle of a test.
+    pub fn glance(&mut self) {
+        in_background(
+            || WindowsDisplay.snapshot().ok(),
+            |s, snapshot, _| {
+                if let Some(snapshot) = snapshot {
+                    s.see(snapshot);
+                }
+            },
+        );
+    }
+
+    /// Takes in how the desktop looks now: which monitors this PC uses, and where they are.
+    pub fn see(&mut self, snapshot: Snapshot) {
         if self.desk_memory.remember(&snapshot) && self.notify_tray {
-            // Another process may have written the file since it was read: update a fresh
-            // copy rather than write this one back.
-            let path = paths::state_file();
-            let mut state = State::load(&path);
-            state.remember(&snapshot);
-            if let Err(error) = state.save(&path) {
-                log::warn!("could not save state: {error}");
+            // Whoever is applying a layout owns the state file meanwhile, and records the
+            // positions itself.
+            if let Some(_applying) = NamedMutex::try_acquire(APPLY_MUTEX) {
+                // Another process may have written the file since it was read: update a
+                // fresh copy rather than write this one back.
+                let path = paths::state_file();
+                let mut state = State::load(&path);
+                state.remember(&snapshot);
+                if let Err(error) = state.save(&path) {
+                    log::warn!("could not save state: {error}");
+                }
             }
         }
         self.snapshot = snapshot;
+    }
+
+    pub fn finish_detect(&mut self, snapshot: Snapshot, detected: Vec<Detected>) {
+        self.see(snapshot);
         let known = self.model.draft.monitors.len();
         self.model.merge(&detected);
         self.detecting = false;
@@ -182,7 +213,7 @@ impl Settings {
         }
     }
 
-    /// The input monitor `index`'s test will show: the one picked, else the first other input.
+    /// The input a monitor's test will show: the one picked, else the first other input.
     fn test_target(&self, monitor: &MonitorConfig) -> Option<InputCode> {
         let others = present::other_inputs(&self.model.draft, &monitor.id);
         self.test_choice
@@ -197,7 +228,7 @@ impl Settings {
             return;
         };
         let status = monitor_status(&self.snapshot, &monitor.id);
-        if test_blocked(monitor, status, &self.test).is_some() {
+        if test_blocked(monitor, status, &self.test, self.applying).is_some() {
             return;
         }
         let (Some(pc_input), Some(target)) = (monitor.pc_input, self.test_target(monitor)) else {
@@ -227,7 +258,7 @@ impl Settings {
     /// when the window was closed while the monitor was away.
     pub fn finish_test(&mut self, result: Result<(), String>) -> bool {
         self.test = TestState::Finished(result);
-        self.quit_after_test
+        self.quit_when_idle
     }
 
     /// Takes the hand-typed code of monitor `index` as the input this PC is plugged into.
@@ -272,7 +303,7 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, layer: &mut Vec<El>) -> El {
                     "redetect",
                     "Look for monitors again",
                     ButtonVariant::Neutral,
-                    !s.detecting,
+                    !s.detecting && !s.busy(),
                     |s, _| s.start_detect(),
                 ),
             ],
@@ -390,7 +421,7 @@ fn card(
             .collect();
         if !others.is_empty() {
             let target = s.test_target(monitor).map(input_name);
-            let blocked = test_blocked(monitor, status, &s.test);
+            let blocked = test_blocked(monitor, status, &s.test, s.applying);
             rows.push(ui::setting_row_note(
                 p,
                 "test",
