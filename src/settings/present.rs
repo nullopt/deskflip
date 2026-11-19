@@ -2,12 +2,83 @@
 
 use rune::Shortcut;
 
-use super::model::input_choices;
+use super::model::{Model, input_choices};
 use crate::config::{Config, Layout, LayoutMonitor, Role};
 use crate::display::{MonitorId, Rect, Snapshot};
 use crate::hotkey::{self, HotkeyError};
 use crate::input::{InputCode, input_name};
 use crate::state::State;
+
+/// One line of the setup checklist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuideStep {
+    pub title: &'static str,
+    pub note: &'static str,
+    /// What the step's button says.
+    pub action: &'static str,
+    pub done: bool,
+}
+
+/// Whether a layout hands any monitor to another device.
+fn hands_over(layout: &Layout) -> bool {
+    layout
+        .monitors
+        .iter()
+        .any(|entry| matches!(entry.role, Role::Other { .. }))
+}
+
+/// The setup checklist, while setup is not finished. It goes for good once the saved settings
+/// hand a monitor over, and never bothers someone who saved several layouts without one.
+pub fn guide(model: &Model) -> Option<[GuideStep; 4]> {
+    let set_up = model
+        .saved()
+        .is_some_and(|saved| saved.layouts.iter().any(hands_over) || saved.layouts.len() >= 2);
+    if set_up {
+        return None;
+    }
+    let draft = &model.draft;
+    let still_numbered = |label: &str| {
+        label
+            .strip_prefix("Monitor ")
+            .is_some_and(|rest| rest.parse::<u32>().is_ok())
+    };
+    Some([
+        GuideStep {
+            title: "Name your monitors",
+            note: "Press Identify to see which is which, then give each a name you will \
+                   recognise.",
+            action: "Go to Monitors",
+            done: !draft.monitors.is_empty()
+                && !draft
+                    .monitors
+                    .iter()
+                    .any(|monitor| still_numbered(&monitor.label)),
+        },
+        GuideStep {
+            title: "Confirm which input this PC is plugged into",
+            note: "Do this for the monitor you share with another device. Deskflip needs it \
+                   to bring the monitor back.",
+            action: "Go to Monitors",
+            done: draft
+                .monitors
+                .iter()
+                .any(|monitor| monitor.pc_input_confirmed),
+        },
+        GuideStep {
+            title: "Create a layout that hands a monitor to the other device",
+            note: "For example your work laptop. You end up with one layout for each way you \
+                   use your desk.",
+            action: "Create it",
+            done: draft.layouts.iter().any(hands_over),
+        },
+        GuideStep {
+            title: "Save",
+            note: "Then switch from the tray icon, or give each layout a hotkey.",
+            action: "Save",
+            done: !model.is_dirty(),
+        },
+    ])
+}
 
 /// How a monitor relates to this PC right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -81,13 +81,9 @@ fn save_bar_only_when_dirty() {
 }
 
 #[test]
-fn first_run_shows_the_banner() {
-    assert!(
-        window(scenes::first_run())
-            .find("first-run-banner")
-            .is_some()
-    );
-    assert!(window(scenes::desk()).find("first-run-banner").is_none());
+fn the_setup_checklist_shows_until_setup_is_done() {
+    assert!(window(scenes::first_run()).find("guide").is_some());
+    assert!(window(scenes::desk()).find("guide").is_none());
 }
 
 #[test]
@@ -694,4 +690,96 @@ fn identify_without_a_real_window_shows_nothing() {
     let mut settings = scenes::desk();
     settings.identify();
     assert!(!settings.identifying);
+}
+
+// --- the setup checklist ---
+
+fn done(settings: &Settings) -> Vec<bool> {
+    present::guide(&settings.model)
+        .expect("the checklist is showing")
+        .iter()
+        .map(|step| step.done)
+        .collect()
+}
+
+#[test]
+fn checklist_starts_with_nothing_done() {
+    assert_eq!(done(&scenes::first_run()), [false, false, false, false]);
+}
+
+#[test]
+fn checklist_ticks_follow_the_draft() {
+    let mut settings = scenes::first_run();
+    settings.model.draft.monitors[0].label = "Left".to_owned();
+    assert_eq!(
+        done(&settings),
+        [false, false, false, false],
+        "one is still unnamed"
+    );
+    settings.model.draft.monitors[1].label = "Right".to_owned();
+    assert_eq!(done(&settings), [true, false, false, false]);
+
+    settings.toggle_confirmed(0);
+    assert_eq!(done(&settings), [true, true, false, false]);
+
+    settings.create_handover_layout();
+    assert_eq!(done(&settings), [true, true, true, false]);
+}
+
+#[test]
+fn checklist_goes_once_a_handover_layout_is_saved() {
+    let mut settings = saving_to("guide-done", scenes::first_run());
+    settings.toggle_confirmed(0);
+    settings.create_handover_layout();
+    assert!(settings.save());
+    assert!(present::guide(&settings.model).is_none());
+}
+
+#[test]
+fn checklist_stays_away_from_someone_who_set_up_on_off_layouts_only() {
+    let mut settings = scenes::desk();
+    for layout in &mut settings.model.draft.layouts {
+        layout.monitors[0].role = Role::Pc;
+    }
+    settings.model.mark_saved();
+    assert!(present::guide(&settings.model).is_none());
+}
+
+#[test]
+fn create_handover_layout_hands_the_first_confirmed_monitor_over() {
+    let mut settings = scenes::first_run();
+    settings.toggle_confirmed(1);
+    settings.create_handover_layout();
+
+    assert_eq!(settings.page, Page::Layout(1));
+    let layout = &settings.model.draft.layouts[1];
+    assert_eq!(layout.name, "Other device");
+    assert_eq!(layout.monitors[0].role, Role::Pc);
+    assert_eq!(layout.monitors[1].role, Role::Other { input: HDMI_1 });
+    assert_eq!(settings.selected_monitor, Some(MonitorId::new("right")));
+}
+
+#[test]
+fn create_handover_layout_without_a_confirmed_monitor_leads_to_the_monitors_page() {
+    let mut settings = scenes::first_run();
+    settings.go_to(Page::Layout(0));
+    settings.create_handover_layout();
+    assert_eq!(settings.model.draft.layouts.len(), 1);
+    assert_eq!(settings.page, Page::Monitors);
+}
+
+#[test]
+fn the_checklist_button_acts_on_the_first_step_not_yet_done() {
+    let mut runtime = window(scenes::on_page(scenes::first_run(), Page::General));
+    press(&mut runtime, "guide-action");
+    assert_eq!(runtime.state.page, Page::Monitors);
+}
+
+#[test]
+fn confirm_now_jumps_from_a_blocked_role_to_the_monitors_page() {
+    let mut settings = scenes::unconfirmed();
+    settings.go_to(Page::Layout(0));
+    let mut runtime = window(settings);
+    press(&mut runtime, "confirm-now");
+    assert_eq!(runtime.state.page, Page::Monitors);
 }

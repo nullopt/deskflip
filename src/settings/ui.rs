@@ -4,6 +4,7 @@ use rune::tok::{self, TextStyle, Theme, motion, radius, space, type_};
 use rune::{Color, Cx, El, Shortcut, ShortcutError, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, Select};
 
+use super::present::GuideStep;
 use super::{Page, Settings};
 
 /// The title of windows that are not the settings window itself.
@@ -507,15 +508,71 @@ pub fn save_bar(p: Paint, k: &Kit, s: &Settings) -> El {
         )
 }
 
-/// A highlighted card with a title and a paragraph.
-pub fn banner(p: Paint, key: &str, title: &str, body: &str) -> El {
-    col()
-        .key(key)
+/// The setup checklist: what is done, what is next, and a button that does the next thing.
+pub fn guide(p: Paint, k: &Kit, s: &Settings, steps: &[GuideStep]) -> El {
+    let next = steps.iter().position(|step| !step.done);
+    let mut list = col()
+        .key("guide")
         .padding(space::S3 + space::S1)
-        .gap(space::S1)
+        .gap(space::S3)
         .radius(radius::LG)
-        .fill(p.accent.alpha(0.14))
+        .fill(p.accent.alpha(0.12))
         .border(p.hair, p.accent.alpha(0.35))
-        .child(text(title).font(type_::TITLE).color(p.t.text))
-        .child(text(body).font(type_::BODY).color(p.t.text).wrap())
+        .child(text("Set up Deskflip").font(type_::TITLE).color(p.t.text));
+    for (index, step) in steps.iter().enumerate() {
+        let is_next = next == Some(index);
+        let mark = el()
+            .size(16.0, 16.0)
+            .radius(8.0)
+            .mt(1.0)
+            .fill(if step.done {
+                p.accent
+            } else {
+                Color::TRANSPARENT
+            })
+            .border(
+                1.5,
+                if step.done || is_next {
+                    p.accent
+                } else {
+                    p.t.text_secondary.alpha(0.5)
+                },
+            )
+            .a11y_hidden();
+        let mut words = col().grow(1.0).min_w(0.0).gap(2.0).child(
+            text(step.title)
+                .font(if is_next { type_::TITLE } else { type_::BODY })
+                .color(if step.done {
+                    p.t.text_secondary
+                } else {
+                    p.t.text
+                }),
+        );
+        if is_next {
+            words = words.child(note(p, step.note));
+        }
+        let mut line = row()
+            .key(format!("guide-step-{index}"))
+            .role("listitem")
+            .label(step.title)
+            .checked(step.done)
+            .gap(space::S3)
+            .items_start()
+            .child(mark)
+            .child(words);
+        // A button that only leads to the page already on screen would do nothing.
+        let leads_here = index < 2 && s.page == Page::Monitors;
+        if is_next && !leads_here {
+            line = line.child(button(
+                k,
+                "guide-action",
+                step.action,
+                ButtonVariant::Contrast,
+                index != 3 || s.problems().is_empty(),
+                |s, _| s.guide_action(),
+            ));
+        }
+        list = list.child(line);
+    }
+    list
 }

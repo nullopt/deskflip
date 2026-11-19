@@ -86,13 +86,40 @@ impl Settings {
         }
     }
 
-    pub fn add_layout(&mut self) {
+    /// `base`, or `base` with the first number that makes it a name no layout has.
+    fn unused_layout_name(&self, base: &str) -> String {
         let layouts = &self.model.draft.layouts;
         let taken = |name: &str| layouts.iter().any(|layout| layout.name == name);
-        let name = std::iter::once("New layout".to_owned())
-            .chain((2..).map(|number| format!("New layout {number}")))
+        std::iter::once(base.to_owned())
+            .chain((2..).map(|number| format!("{base} {number}")))
             .find(|name| !taken(name))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    pub fn add_layout(&mut self) {
+        self.add_layout_named("New layout");
+    }
+
+    /// Adds a layout that hands the first monitor that can be handed over to its first other
+    /// input. With no such monitor yet, shows the page where one is confirmed.
+    pub fn create_handover_layout(&mut self) {
+        let draft = &self.model.draft;
+        let shareable = draft
+            .monitors
+            .iter()
+            .find(|monitor| present::another_device_blocked(draft, &monitor.id).is_none())
+            .map(|monitor| monitor.id.clone());
+        let Some(id) = shareable else {
+            self.go_to(Page::Monitors);
+            return;
+        };
+        self.add_layout_named("Other device");
+        self.selected_monitor = Some(id);
+        self.set_role(RoleChoice::AnotherDevice);
+    }
+
+    fn add_layout_named(&mut self, base: &str) {
+        let name = self.unused_layout_name(base);
         let monitors = self
             .model
             .draft
@@ -357,7 +384,18 @@ fn monitor_section(
         ),
     )];
     if let Some(reason) = blocked {
-        rows.push(ui::note_row(p, "role-blocked", reason));
+        let mut row = ui::note_row(p, "role-blocked", reason).gap(space::S3);
+        if !monitor.pc_input_confirmed {
+            row = row.child(ui::button(
+                k,
+                "confirm-now",
+                "Confirm now",
+                ButtonVariant::Neutral,
+                true,
+                |s, _| s.go_to(Page::Monitors),
+            ));
+        }
+        rows.push(row);
     }
     match choice {
         RoleChoice::AnotherDevice => {

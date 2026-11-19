@@ -240,6 +240,21 @@ impl Settings {
         };
     }
 
+    /// Does the next thing the setup checklist asks for.
+    pub fn guide_action(&mut self) {
+        let Some(steps) = present::guide(&self.model) else {
+            return;
+        };
+        match steps.iter().position(|step| !step.done) {
+            Some(0 | 1) => self.go_to(Page::Monitors),
+            Some(2) => self.create_handover_layout(),
+            Some(_) => {
+                self.save();
+            }
+            None => {}
+        }
+    }
+
     /// What stops the draft from being saved, in words.
     pub fn problems(&self) -> Vec<String> {
         validate(&self.model.draft)
@@ -404,11 +419,13 @@ fn in_background<T: Send + 'static>(
 }
 
 pub fn run() -> ExitCode {
-    // Two settings windows editing one file would overwrite each other's changes.
-    let Some(_instance) = NamedMutex::try_acquire(SETTINGS_MUTEX) else {
+    // Two settings windows editing one file would overwrite each other's changes. A headless
+    // render edits nothing, so it may run beside an open window.
+    let instance = NamedMutex::try_acquire(SETTINGS_MUTEX);
+    if instance.is_none() && !rune::is_headless() {
         win::focus_window_titled(WINDOW_TITLE);
         return ExitCode::SUCCESS;
-    };
+    }
 
     let spec = AppSpec {
         min_size: Some((760.0, 520.0)),
@@ -467,7 +484,7 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .child(first_run(p, s).child(page)),
+            .child(first_run(p, &k, s).child(page)),
     );
     if s.model.is_dirty() {
         content = content.child(ui::save_bar(p, &k, s));
@@ -483,20 +500,13 @@ fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     rune_kit::root(body, layer)
 }
 
-/// The page column, led by a welcome while nothing has been saved yet.
-fn first_run(p: Paint, s: &Settings) -> El {
+/// The page column, led by the setup checklist while setup is not finished.
+fn first_run(p: Paint, k: &Kit, s: &Settings) -> El {
     let column = col().padding(space::S6).gap(space::S6);
-    if !s.model.is_first_run() {
-        return column;
+    match present::guide(&s.model) {
+        Some(steps) => column.child(ui::guide(p, k, s, &steps)),
+        None => column,
     }
-    column.child(ui::banner(
-        p,
-        "first-run-banner",
-        "Welcome to Deskflip",
-        "Check that each monitor is named the way you think of it, then tell Deskflip which \
-         input this PC is plugged into. After that, create a layout for each way you use your \
-         desk.",
-    ))
 }
 
 /// The question asked when the window is closed with unsaved changes.

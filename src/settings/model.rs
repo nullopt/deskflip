@@ -18,6 +18,11 @@ impl Model {
         Self { saved, draft }
     }
 
+    /// The settings as last saved, if they ever were.
+    pub fn saved(&self) -> Option<&Config> {
+        self.saved.as_ref()
+    }
+
     pub fn is_first_run(&self) -> bool {
         self.saved.is_none()
     }
