@@ -12,6 +12,7 @@ pub mod hotkey;
 pub mod input;
 pub mod logger;
 pub mod paths;
+pub mod plan;
 pub mod validate;
 pub mod win;
 

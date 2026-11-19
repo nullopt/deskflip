@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::{Config, Layout, LayoutMonitor, MonitorConfig, Role, VERSION};
-use crate::display::MonitorId;
+use crate::display::{ConnectedMonitor, MonitorId, Snapshot};
 use crate::input::InputCode;
 
 pub const DP: InputCode = InputCode(0x0F);
@@ -77,4 +77,20 @@ pub fn desk() -> Config {
             ),
         ],
     )
+}
+
+/// Builds a snapshot from `(name, active, primary)` triples.
+pub fn snap(monitors: &[(&str, bool, bool)]) -> Snapshot {
+    Snapshot {
+        monitors: monitors
+            .iter()
+            .map(|&(name, active, primary)| ConnectedMonitor {
+                id: id(name),
+                model: "TEST".to_owned(),
+                active,
+                primary,
+                rect: None,
+            })
+            .collect(),
+    }
 }
