@@ -39,6 +39,9 @@ A typical desk with two monitors and a work laptop on the left one has two layou
    *Run anyway*.
 3. The settings window opens with a short checklist.
 
+Deskflip then waits in the system tray. Windows 11 hides new tray icons: click the **^** arrow
+beside the clock and drag the Deskflip icon onto the taskbar to keep it in view.
+
 ![The setup checklist](assets/screenshots/setup-dark.png)
 
 ## Set up
