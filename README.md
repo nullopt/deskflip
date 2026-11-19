@@ -1,5 +1,8 @@
 # Deskflip
 
+[![CI](https://github.com/nullopt/deskflip/actions/workflows/ci.yml/badge.svg)](https://github.com/nullopt/deskflip/actions/workflows/ci.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 Share a monitor between your PC and another device (a work laptop, a console) and switch with one
 key. Deskflip changes the monitor's input **and** tells Windows which monitors your PC still has,
 so your windows move to the screens you can actually see.
@@ -30,7 +33,8 @@ A typical desk with two monitors and a work laptop on the left one has two layou
 
 ## Install
 
-1. Download `deskflip.zip` from the Releases page and unzip it anywhere.
+1. Download `deskflip.zip` from the [Releases page](https://github.com/nullopt/deskflip/releases)
+   and unzip it anywhere.
 2. Run `deskflip.exe`. Windows may warn that the file is unsigned; choose *More info*, then
    *Run anyway*.
 3. The settings window opens with a short checklist.
