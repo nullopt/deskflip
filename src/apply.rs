@@ -4,10 +4,13 @@
 //! monitors end up as the layout describes, or the desktop is put back as it was and every
 //! monitor that was sent away is told to come back.
 
-use crate::config::Config;
-use crate::display::{Display, DisplayError, MonitorId};
+use crate::config::{Config, ConfigError};
+use crate::display::{Display, DisplayError, MonitorId, WindowsDisplay};
+use crate::paths;
 use crate::plan::{Plan, PlanError, Step, plan};
+use crate::state::State;
 use crate::validate::layout_is_usable;
+use crate::win::{APPLY_MUTEX, CHANGED_EVENT, NamedEvent, NamedMutex};
 
 /// A layout change that succeeded.
 #[derive(Debug, PartialEq)]
@@ -33,6 +36,57 @@ pub enum ApplyError {
     RollbackFailed { cause: String, rollback: String },
     #[error("another layout change is still in progress")]
     Busy,
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+}
+
+/// Applies a layout on this PC's real monitors, using the saved settings.
+///
+/// This is the one entry point every trigger uses (tray, hotkey, command line, settings
+/// window). It makes sure only one change runs at a time across processes, remembers the
+/// layout on success, and wakes the tray so its menu reflects the result.
+pub fn run(layout_name: &str) -> Result<Outcome, ApplyError> {
+    let Some(_lock) = NamedMutex::try_acquire(APPLY_MUTEX) else {
+        return Err(ApplyError::Busy);
+    };
+
+    let result = Config::load(&paths::config_file())
+        .map_err(ApplyError::from)
+        .and_then(|config| {
+            let config = config.ok_or_else(|| ApplyError::UnknownLayout(layout_name.to_owned()))?;
+            let outcome = apply_layout(&mut WindowsDisplay, &config, layout_name);
+            // Record under the name as the settings spell it, not as the caller typed it.
+            let name = config
+                .layout(layout_name)
+                .map_or(layout_name, |layout| layout.name.as_str());
+            let state_file = paths::state_file();
+            let mut state = State::load(&state_file);
+            record(&outcome, name, &mut state);
+            if let Err(error) = state.save(&state_file) {
+                log::warn!("could not save state: {error}");
+            }
+            outcome
+        });
+
+    match &result {
+        Ok(outcome) => log::info!(
+            "applied \"{layout_name}\" ({} monitor(s) skipped)",
+            outcome.skipped.len()
+        ),
+        Err(error) => log::error!("applying \"{layout_name}\" failed: {error}"),
+    }
+    if let Ok(event) = NamedEvent::open_or_create(CHANGED_EVENT) {
+        event.signal();
+    }
+    result
+}
+
+/// Updates the remembered layout after an attempt. A failed attempt was rolled back (or left
+/// the monitors in an unknown arrangement), so what was remembered before stays.
+fn record(result: &Result<Outcome, ApplyError>, layout_name: &str, state: &mut State) {
+    if result.is_ok() {
+        state.last_applied = Some(layout_name.to_owned());
+    }
 }
 
 /// Applies the layout named `layout_name` (matched without regard to case).
@@ -119,6 +173,7 @@ fn roll_back<D: Display>(
 mod tests {
     use super::*;
     use crate::display::fake::FakeDisplay;
+    use crate::state::State;
     use crate::testing::{DP, HDMI2, desk, id, snap};
 
     fn at_home() -> FakeDisplay {
@@ -286,5 +341,49 @@ mod tests {
         let mut display = at_home();
 
         assert!(apply_layout(&mut display, &desk(), "WORK").is_ok());
+    }
+
+    #[test]
+    fn state_updated_on_success() {
+        let mut state = State::default();
+
+        record(
+            &Ok(Outcome {
+                skipped: Vec::new(),
+            }),
+            "work",
+            &mut state,
+        );
+
+        assert_eq!(state.last_applied.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn state_unchanged_on_rollback() {
+        let mut state = State {
+            last_applied: Some("home".to_owned()),
+        };
+        let failed = Err(ApplyError::RolledBack {
+            cause: "x".to_owned(),
+        });
+
+        record(&failed, "work", &mut state);
+
+        assert_eq!(state.last_applied.as_deref(), Some("home"));
+    }
+
+    #[test]
+    fn state_unchanged_on_rollback_failure() {
+        let mut state = State {
+            last_applied: Some("home".to_owned()),
+        };
+        let failed = Err(ApplyError::RollbackFailed {
+            cause: "x".to_owned(),
+            rollback: "y".to_owned(),
+        });
+
+        record(&failed, "work", &mut state);
+
+        assert_eq!(state.last_applied.as_deref(), Some("home"));
     }
 }
