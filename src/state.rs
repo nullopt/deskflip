@@ -11,7 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Layout};
-use crate::display::Snapshot;
+use crate::display::{MonitorId, Rect, Snapshot};
 use crate::plan::plan;
 use crate::validate::layout_is_usable;
 
@@ -19,6 +19,20 @@ use crate::validate::layout_is_usable;
 pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_applied: Option<String>,
+    /// Where each monitor was on the desktop when last seen there. A monitor handed to
+    /// another device has no place on the desktop, but the settings window still draws it.
+    #[serde(default, rename = "position", skip_serializing_if = "Vec::is_empty")]
+    pub positions: Vec<Position>,
+}
+
+/// A monitor's last known place on the desktop, in pixels.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Position {
+    pub id: MonitorId,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl State {
@@ -36,6 +50,52 @@ impl State {
         }
         let text = toml::to_string(self).map_err(io::Error::other)?;
         fs::write(path, text)
+    }
+}
+
+impl State {
+    /// Notes where the monitors in `snapshot` are. Returns whether anything changed.
+    pub fn remember(&mut self, snapshot: &Snapshot) -> bool {
+        let mut changed = false;
+        for monitor in &snapshot.monitors {
+            let Some(rect) = monitor.rect else { continue };
+            let seen = Position {
+                id: monitor.id.clone(),
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            };
+            match self
+                .positions
+                .iter_mut()
+                .find(|known| known.id == monitor.id)
+            {
+                Some(known) if *known == seen => {}
+                Some(known) => {
+                    *known = seen;
+                    changed = true;
+                }
+                None => {
+                    self.positions.push(seen);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Where a monitor was when last seen on the desktop.
+    pub fn position(&self, id: &MonitorId) -> Option<Rect> {
+        self.positions
+            .iter()
+            .find(|known| &known.id == id)
+            .map(|known| Rect {
+                x: known.x,
+                y: known.y,
+                width: known.width,
+                height: known.height,
+            })
     }
 }
 
@@ -72,12 +132,75 @@ pub fn next_layout<'a>(config: &'a Config, state: &State) -> Option<&'a Layout> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{desk, snap, temp_dir};
+    use crate::display::{ConnectedMonitor, Rect};
+    use crate::testing::{desk, id, snap, temp_dir};
 
     fn applied(name: &str) -> State {
         State {
             last_applied: Some(name.to_owned()),
+            ..State::default()
         }
+    }
+
+    fn placed(name: &str, x: i32) -> ConnectedMonitor {
+        ConnectedMonitor {
+            id: id(name),
+            model: "TEST".to_owned(),
+            active: true,
+            primary: x == 0,
+            rect: Some(Rect {
+                x,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            }),
+        }
+    }
+
+    #[test]
+    fn remember_keeps_where_each_monitor_was_last_seen() {
+        let mut state = State::default();
+        let both = Snapshot {
+            monitors: vec![placed("L", -2560), placed("R", 0)],
+        };
+        assert!(state.remember(&both));
+        assert!(!state.remember(&both), "nothing new the second time");
+
+        // The left monitor leaves the desktop; its place is still known.
+        let mut only_right = both.clone();
+        only_right.monitors[0].active = false;
+        only_right.monitors[0].rect = None;
+        assert!(!state.remember(&only_right));
+        assert_eq!(state.position(&id("L")).map(|rect| rect.x), Some(-2560));
+        assert_eq!(state.position(&id("elsewhere")), None);
+    }
+
+    #[test]
+    fn remember_follows_a_monitor_that_moved() {
+        let mut state = State::default();
+        state.remember(&Snapshot {
+            monitors: vec![placed("L", -2560)],
+        });
+        assert!(state.remember(&Snapshot {
+            monitors: vec![placed("L", 2560)],
+        }));
+        assert_eq!(state.position(&id("L")).map(|rect| rect.x), Some(2560));
+        assert_eq!(state.positions.len(), 1);
+    }
+
+    #[test]
+    fn positions_survive_a_round_trip_and_old_files_still_load() {
+        let dir = temp_dir("state-positions");
+        let path = dir.join("state.toml");
+        let mut state = applied("work");
+        state.remember(&Snapshot {
+            monitors: vec![placed("L", -2560)],
+        });
+        state.save(&path).unwrap();
+        assert_eq!(State::load(&path), state);
+
+        fs::write(&path, "last_applied = \"home\"\n").unwrap();
+        assert_eq!(State::load(&path), applied("home"));
     }
 
     #[test]

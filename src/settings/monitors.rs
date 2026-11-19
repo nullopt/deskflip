@@ -15,6 +15,8 @@ use super::{Settings, in_background};
 use crate::config::{Detected, MonitorConfig};
 use crate::display::{Display, DisplayError, Snapshot, WindowsDisplay};
 use crate::input::{InputCode, input_name, parse_input_codes};
+use crate::paths;
+use crate::state::State;
 
 const FIELD_WIDTH: f32 = 220.0;
 
@@ -114,6 +116,16 @@ impl Settings {
     }
 
     pub fn finish_detect(&mut self, snapshot: Snapshot, detected: Vec<Detected>) {
+        if self.desk_memory.remember(&snapshot) && self.notify_tray {
+            // Another process may have written the file since it was read: update a fresh
+            // copy rather than write this one back.
+            let path = paths::state_file();
+            let mut state = State::load(&path);
+            state.remember(&snapshot);
+            if let Err(error) = state.save(&path) {
+                log::warn!("could not save state: {error}");
+            }
+        }
         self.snapshot = snapshot;
         self.model.merge(&detected);
         self.detecting = false;

@@ -216,6 +216,7 @@ mod tests {
         let at_work = snap(&[("L", false, false), ("R", true, true)]);
         let state = State {
             last_applied: Some("work".to_owned()),
+            ..State::default()
         };
 
         let report = list_report(&desk(), &state, &at_work);

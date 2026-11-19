@@ -35,6 +35,7 @@ use crate::display::{MonitorId, Snapshot};
 use crate::hotkey;
 use crate::input::InputCode;
 use crate::paths;
+use crate::state::State;
 use crate::validate::validate;
 use crate::win::{self, CHANGED_EVENT, NamedEvent, NamedMutex, SETTINGS_MUTEX};
 
@@ -108,6 +109,8 @@ pub struct Settings {
     pub page: Page,
     /// Where the settings are saved.
     pub config_path: PathBuf,
+    /// Where each monitor was last seen on the desktop, for drawing the ones not in use.
+    pub desk_memory: State,
     /// Whether a save is announced to the tray. Off for windows that are not the real one.
     notify_tray: bool,
     /// Shown instead of the pages when the settings file exists but cannot be used.
@@ -150,6 +153,7 @@ impl Settings {
         };
         let mut settings = Self::new(Model::new(saved), load_error);
         settings.config_path = config_path;
+        settings.desk_memory = State::load(&paths::state_file());
         settings.notify_tray = true;
         settings.start_with_windows = autostart::is_enabled();
         settings
@@ -166,6 +170,7 @@ impl Settings {
             snapshot: Snapshot::default(),
             page,
             config_path: PathBuf::new(),
+            desk_memory: State::default(),
             notify_tray: false,
             load_error,
             save_error: None,

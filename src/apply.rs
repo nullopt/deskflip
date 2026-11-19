@@ -54,6 +54,8 @@ pub fn run(layout_name: &str) -> Result<Outcome, ApplyError> {
         .map_err(ApplyError::from)
         .and_then(|config| {
             let config = config.ok_or_else(|| ApplyError::UnknownLayout(layout_name.to_owned()))?;
+            // A monitor about to be handed over is on the desktop now: note where.
+            let before = WindowsDisplay.snapshot();
             let outcome = apply_layout(&mut WindowsDisplay, &config, layout_name);
             // Record under the name as the settings spell it, not as the caller typed it.
             let name = config
@@ -61,6 +63,10 @@ pub fn run(layout_name: &str) -> Result<Outcome, ApplyError> {
                 .map_or(layout_name, |layout| layout.name.as_str());
             let state_file = paths::state_file();
             let mut state = State::load(&state_file);
+            // Before and after: together they cover every monitor either layout uses.
+            for seen in [before, WindowsDisplay.snapshot()].iter().flatten() {
+                state.remember(seen);
+            }
             record(&outcome, name, &mut state);
             if let Err(error) = state.save(&state_file) {
                 log::warn!("could not save state: {error}");
@@ -362,6 +368,7 @@ mod tests {
     fn state_unchanged_on_rollback() {
         let mut state = State {
             last_applied: Some("home".to_owned()),
+            ..State::default()
         };
         let failed = Err(ApplyError::RolledBack {
             cause: "x".to_owned(),
@@ -376,6 +383,7 @@ mod tests {
     fn state_unchanged_on_rollback_failure() {
         let mut state = State {
             last_applied: Some("home".to_owned()),
+            ..State::default()
         };
         let failed = Err(ApplyError::RollbackFailed {
             cause: "x".to_owned(),

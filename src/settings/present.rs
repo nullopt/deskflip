@@ -7,6 +7,7 @@ use crate::config::{Config, Layout, LayoutMonitor, Role};
 use crate::display::{MonitorId, Rect, Snapshot};
 use crate::hotkey::{self, HotkeyError};
 use crate::input::{InputCode, input_name};
+use crate::state::State;
 
 /// How a monitor relates to this PC right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,15 +209,26 @@ pub struct DeskRect {
     pub h: f32,
 }
 
-/// Lays the known monitors out as they sit on the desk, scaled to fit `area`. Monitors Windows
-/// gives no position for (not in use, or not connected) stand in a row to the right.
-pub fn desk_rects(snapshot: &Snapshot, config: &Config, area: (f32, f32)) -> Vec<DeskRect> {
+/// Lays the known monitors out as they sit on the desk, scaled to fit `area`. A monitor
+/// Windows gives no position for (not in use, or not connected) is drawn where it was last
+/// seen; one never seen on the desktop stands in a row to the right.
+pub fn desk_rects(
+    snapshot: &Snapshot,
+    remembered: &State,
+    config: &Config,
+    area: (f32, f32),
+) -> Vec<DeskRect> {
     const INSET: f32 = 16.0;
     const GAP: f32 = 12.0;
     /// The shape drawn for a monitor when no monitor's real size is known.
     const FALLBACK: (f32, f32) = (2560.0, 1440.0);
 
-    let rect_of = |id: &MonitorId| snapshot.get(id).and_then(|found| found.rect);
+    let rect_of = |id: &MonitorId| {
+        snapshot
+            .get(id)
+            .and_then(|found| found.rect)
+            .or_else(|| remembered.position(id))
+    };
     let placed: Vec<(&MonitorId, Rect)> = config
         .monitors
         .iter()
@@ -516,7 +528,7 @@ mod tests {
         let snapshot = Snapshot {
             monitors: vec![placed("L", -2560), placed("R", 0)],
         };
-        let rects = desk_rects(&snapshot, &desk(), (400.0, 200.0));
+        let rects = desk_rects(&snapshot, &State::default(), &desk(), (400.0, 200.0));
 
         assert_eq!(rects.len(), 2);
         let (left, right) = (&rects[0], &rects[1]);
@@ -537,7 +549,7 @@ mod tests {
         let snapshot = Snapshot {
             monitors: vec![placed("R", 0)],
         };
-        let rects = desk_rects(&snapshot, &desk(), (400.0, 200.0));
+        let rects = desk_rects(&snapshot, &State::default(), &desk(), (400.0, 200.0));
 
         assert_eq!(rects.len(), 2);
         let left = rects.iter().find(|rect| rect.id == id("L")).unwrap();
@@ -548,8 +560,32 @@ mod tests {
     }
 
     #[test]
+    fn desk_rects_put_a_monitor_not_in_use_where_it_was_last_seen() {
+        let mut remembered = State::default();
+        remembered.remember(&Snapshot {
+            monitors: vec![placed("L", -2560), placed("R", 0)],
+        });
+        let now = Snapshot {
+            monitors: vec![placed("R", 0)],
+        };
+        let rects = desk_rects(&now, &remembered, &desk(), (400.0, 200.0));
+
+        let left = rects.iter().find(|rect| rect.id == id("L")).unwrap();
+        let right = rects.iter().find(|rect| rect.id == id("R")).unwrap();
+        assert!(
+            (left.x + left.w - right.x).abs() < 0.01,
+            "left sits left of right"
+        );
+    }
+
+    #[test]
     fn desk_rects_without_any_position_still_show_every_monitor() {
-        let rects = desk_rects(&Snapshot::default(), &desk(), (400.0, 200.0));
+        let rects = desk_rects(
+            &Snapshot::default(),
+            &State::default(),
+            &desk(),
+            (400.0, 200.0),
+        );
         assert_eq!(rects.len(), 2);
         assert!(rects.iter().all(|rect| rect.w > 0.0 && rect.h > 0.0));
         assert!(rects[1].x >= rects[0].x + rects[0].w);

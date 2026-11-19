@@ -208,7 +208,7 @@ pub fn view(p: Paint, k: &Kit, s: &Settings, index: usize, layer: &mut Vec<El>) 
 fn desk(p: Paint, k: &Kit, s: &Settings, layout: &Layout, edited: Option<&MonitorId>) -> El {
     let config = &s.model.draft;
     let mut stage = el().key("desk").size(DESK.0, DESK.1);
-    for rect in desk_rects(&s.snapshot, config, DESK) {
+    for rect in desk_rects(&s.snapshot, &s.desk_memory, config, DESK) {
         let Some(index) = config
             .monitors
             .iter()

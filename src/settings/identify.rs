@@ -1,10 +1,10 @@
-//! "Identify": a large number shown on each monitor, so the user can tell which is which.
+//! "Identify": each monitor briefly shows its number, so the user can tell which is which.
 
 use std::thread;
 use std::time::Duration;
 
 use rune::tok::{TextStyle, radius, space};
-use rune::{AppSpec, Cx, El, WindowOptions, WindowSpec, col, text};
+use rune::{AppSpec, Cx, El, WindowOptions, WindowSpec, col, row, text};
 
 use super::model::Model;
 use super::{HANDLE, Settings, ui};
@@ -13,8 +13,10 @@ use crate::display::Snapshot;
 /// How long the numbers stay up.
 pub const SHOWN_FOR: Duration = Duration::from_secs(3);
 
-const NUMBER: TextStyle = TextStyle::new(140.0, 700.0);
-const LABEL: TextStyle = TextStyle::new(22.0, 500.0);
+const NUMBER: TextStyle = TextStyle::new(40.0, 700.0);
+const LABEL: TextStyle = TextStyle::new(15.0, 500.0);
+/// How far the tag sits from the monitor's edges, clear of the taskbar.
+const MARGIN: f32 = 64.0;
 
 /// What to show on one monitor, and where that monitor is on the desktop.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,26 +52,34 @@ pub fn badges(snapshot: &Snapshot, model: &Model) -> Vec<Badge> {
         .collect()
 }
 
-/// The badge window: transparent and as large as its monitor, with a panel in the middle.
+/// The badge window: transparent and as large as its monitor, with a small tag in the bottom
+/// left corner, out of the way of whatever is on screen.
 fn view(badge: &Badge, cx: &mut Cx<Badge>) -> El {
     let dark = cx.system_dark();
     let theme = rune::tok::theme(dark);
-    let panel = col()
+    let tag = row()
         .key("badge")
-        .size(320.0, 240.0)
-        .center()
-        .gap(space::S1)
-        .radius(radius::LG * 2.0)
+        .px(space::S3 + space::S1)
+        .py(space::S2)
+        .gap(space::S3)
+        .center_y()
+        .radius(radius::LG)
         .fill(theme.card.alpha(0.94))
         .border(1.0, theme.card_border)
-        .shadow(8.0, 32.0, theme.shadow)
+        .shadow(4.0, 16.0, theme.shadow)
         .child(
             text(badge.number.to_string())
                 .font(NUMBER)
                 .color(rune::tok::accent(0, dark)),
         )
         .child(text(badge.label.as_str()).font(LABEL).color(theme.text));
-    col().w_full().h_full().center().child(panel)
+    col()
+        .w_full()
+        .h_full()
+        .padding(MARGIN)
+        .justify_end()
+        .items_start()
+        .child(tag)
 }
 
 impl Settings {
