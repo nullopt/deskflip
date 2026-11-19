@@ -6,10 +6,14 @@
 use std::io;
 use std::marker::PhantomData;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_EVENT, WAIT_OBJECT_0};
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, ReleaseMutex, SetEvent, WaitForSingleObject,
+    CreateEventW, CreateMutexW, INFINITE, ReleaseMutex, SetEvent, WaitForSingleObject,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    TranslateMessage, WM_QUIT,
 };
 use windows::core::HSTRING;
 
@@ -105,6 +109,59 @@ impl Drop for NamedEvent {
         // SAFETY: the handle is ours and is closed exactly once, here.
         let _ = unsafe { CloseHandle(self.handle) };
     }
+}
+
+/// Why [`wait_for_message_or`] returned.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Wake {
+    /// Window messages were delivered (tray clicks and hotkeys arrive this way).
+    Message,
+    /// The event was signalled.
+    Signalled,
+    /// The message loop was asked to end, or waiting failed.
+    Quit,
+}
+
+/// Blocks until this thread has window messages or `event` is signalled, delivering any
+/// messages before returning. This is the tray process's idle state: it uses no CPU.
+pub fn wait_for_message_or(event: &NamedEvent) -> Wake {
+    loop {
+        match pump_messages() {
+            Some(Wake::Quit) => return Wake::Quit,
+            Some(wake) => return wake,
+            None => {}
+        }
+        // SAFETY: the slice holds one live handle and outlives the call.
+        let wait = unsafe {
+            MsgWaitForMultipleObjects(Some(&[event.handle]), false, INFINITE, QS_ALLINPUT)
+        };
+        if wait == WAIT_OBJECT_0 {
+            return Wake::Signalled;
+        }
+        // One past the last handle means "messages are waiting"; anything else is a failure.
+        if wait != WAIT_EVENT(WAIT_OBJECT_0.0 + 1) {
+            return Wake::Quit;
+        }
+    }
+}
+
+/// Delivers every queued window message. Returns `None` if the queue was already empty.
+fn pump_messages() -> Option<Wake> {
+    let mut delivered = None;
+    let mut message = MSG::default();
+    // SAFETY: `message` is a valid, writable MSG for each call, and messages are dispatched on
+    // the thread that owns their windows.
+    unsafe {
+        while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            if message.message == WM_QUIT {
+                return Some(Wake::Quit);
+            }
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+            delivered = Some(Wake::Message);
+        }
+    }
+    delivered
 }
 
 #[cfg(test)]

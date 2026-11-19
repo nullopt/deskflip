@@ -13,11 +13,14 @@ use crate::input::{input_name, parse_input_codes};
 use crate::logger;
 use crate::paths;
 use crate::state::{State, current_layout};
+use crate::tray;
 use crate::validate::validate;
 use crate::win;
 
 const USAGE: &str = "\
-Usage: deskflip <command>
+Usage: deskflip [command]
+
+With no command, Deskflip runs in the system tray.
 
 Commands:
   apply <layout>   Switch to a layout
@@ -31,6 +34,7 @@ pub fn run() -> ExitCode {
     logger::init(&paths::log_file());
 
     match args.split_first() {
+        None => tray::run(),
         Some((command, rest)) if command == "apply" && !rest.is_empty() => apply(&rest.join(" ")),
         Some((command, [])) if command == "list" => list(),
         Some((command, [])) if command == "monitors" => {
