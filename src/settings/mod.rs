@@ -131,6 +131,8 @@ pub struct Settings {
     pub test_choice: HashMap<MonitorId, InputCode>,
     /// The window was closed while a test was running; quit once the monitor is back.
     pub quit_after_test: bool,
+    /// The numbers are on the monitors right now.
+    pub identifying: bool,
     /// Whether Windows starts Deskflip at sign-in. Lives in the registry, not in the draft.
     pub start_with_windows: bool,
     pub autostart_error: Option<String>,
@@ -177,6 +179,7 @@ impl Settings {
             test: TestState::Idle,
             test_choice: HashMap::new(),
             quit_after_test: false,
+            identifying: false,
             start_with_windows: false,
             autostart_error: None,
             recorders: Recorders::default(),

@@ -658,3 +658,40 @@ fn start_fresh_backs_up_the_bad_file_and_becomes_first_run() {
     assert!(!settings.config_path.exists());
     assert!(settings.config_path.with_extension("toml.bad").exists());
 }
+
+// --- identify ---
+
+#[test]
+fn badges_cover_active_monitors_only_with_their_numbers_and_labels() {
+    let mut settings = scenes::desk();
+    settings.snapshot.monitors[0].active = false;
+    let badges = identify::badges(&settings.snapshot, &settings.model);
+    assert_eq!(badges.len(), 1);
+    assert_eq!(badges[0].number, 2);
+    assert_eq!(badges[0].label, "Right");
+}
+
+#[test]
+fn badges_use_the_monitor_rectangle_in_pixels() {
+    let settings = scenes::desk();
+    let badges = identify::badges(&settings.snapshot, &settings.model);
+    assert_eq!(badges[0].position, (-2560, 0));
+    assert_eq!(badges[0].size, (2560, 1440));
+}
+
+#[test]
+fn a_monitor_windows_gives_no_place_for_gets_no_badge() {
+    let mut settings = scenes::desk();
+    settings.snapshot.monitors[1].rect = None;
+    assert_eq!(
+        identify::badges(&settings.snapshot, &settings.model).len(),
+        1
+    );
+}
+
+#[test]
+fn identify_without_a_real_window_shows_nothing() {
+    let mut settings = scenes::desk();
+    settings.identify();
+    assert!(!settings.identifying);
+}

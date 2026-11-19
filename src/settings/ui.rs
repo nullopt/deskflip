@@ -6,6 +6,8 @@ use rune_kit::{Button, ButtonVariant, Kit, PaletteSeed, Select};
 
 use super::{Page, Settings};
 
+/// The title of windows that are not the settings window itself.
+pub const APP_NAME: &str = "Deskflip";
 pub const PAGE_TITLE: TextStyle = TextStyle::new(20.0, 600.0);
 pub const SIDEBAR_WIDTH: f32 = 200.0;
 const ROW_HEIGHT: f32 = 44.0;
